@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+# async-trait = "0.1.89"
 axum = "0.8.6"
 axum-extra = { version = "0.12.0", features = ["typed-header"] }
 futures-util = { version = "0.3", default-features = false, features = [
@@ -12,12 +13,23 @@ futures-util = { version = "0.3", default-features = false, features = [
     "std",
 ] }
 headers = "0.4"
+hex = "0.4.3"
+hmac = "0.12.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+time = { version = "0.3.44", features = ["macros", "local-offset"] }
 tokio = { version = "1.0", features = ["full"] }
 tokio-stream = "0.1"
 tower-http = { version = "0.6.1", features = ["fs", "trace"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
+tracing-appender = { version = "0.2.3", default_features = false }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "json",
+    "time",
+] }
+dotenvy = "0.15.7"
 [dev-dependencies]
 eventsource-stream = "0.2"
 reqwest = { version = "0.12", features = ["stream"] }
