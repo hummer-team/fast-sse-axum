@@ -1,13 +1,3 @@
-//! Run with
-//!
-//! ```not_rust
-//! cargo run -p example-sse
-//! ```
-//! Test with
-//! ```not_rust
-//! cargo test -p example-sse
-//! ```
-
 use example_sse::log_wrapper::log_wrapper::init;
 use example_sse::sse_service::sse_service::app;
 use tracing::log::info;

@@ -1,24 +1,32 @@
 pub mod sse_service {
     use crate::auth_middle::auth_middle::{auth, AuthConfig};
+    use crate::message_package::message_package::MessagePackage;
+    use crate::response_builder::response_builder::ResponseBuilder;
     use axum::extract::Path;
     use axum::middleware::from_fn_with_state;
     use axum::{
-        response::sse::{Event, Sse},
-        routing::get,
-        Router,
+        body::Body,
+        http::StatusCode,
+        response::{
+            sse::{Event, KeepAlive, Sse},
+            IntoResponse, Response,
+        },
+        routing::{get, post},
+        Json, Router,
     };
-    use axum_extra::TypedHeader;
-    use futures_util::stream::{self, Stream};
+    use serde_json::Value;
     use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::{collections::HashMap, sync::OnceLock};
     use std::{
-        collections::HashMap,
-        sync::{OnceLock, RwLock},
+        convert::Infallible,
+        path::PathBuf,
+        time::{Duration, Instant},
     };
-    use std::{convert::Infallible, path::PathBuf, time::Duration};
     use tokio::sync::broadcast;
-    use tokio_stream::StreamExt as _;
+    use tokio::sync::RwLock;
     use tower_http::{services::ServeDir, trace::TraceLayer};
-    use tracing::log::info;
+    use tracing::log::{error, info, warn};
 
     /// SSE service enter
     pub fn app() -> Router {
@@ -53,64 +61,171 @@ pub mod sse_service {
                 "/v1/sse/events/{event_id}/types/{event_type}",
                 get(subscribert), // http method is get
             )
-            .layer(TraceLayer::new_for_http())
-            .layer(from_fn_with_state(config.clone(), auth));
+            .route(
+                "/v1/sse/events/{event_id}/types/{event_type}",
+                post(send_message), // http method is post
+            )
+            .layer(from_fn_with_state(config.into(), auth))
+            .layer(TraceLayer::new_for_http());
         info!("sse router register success");
         router
     }
 
-    // OnceLock 解决了静态变量的延迟初始化问题，因为rust要求静态变量必须常量
-    // RwLock 读写锁，多线程读，单线程写
-    static CLIENT_SUBSCRIPTIONS: OnceLock<RwLock<HashMap<String, broadcast::Sender<String>>>> =
-        OnceLock::new();
-    static SSE_BROAD_CAST: OnceLock<broadcast::Sender<String>> = OnceLock::new();
+    struct ChannelMeta {
+        sender: broadcast::Sender<Value>,
+        last_activity: Mutex<Instant>,
+    }
 
+    /// 一个 event_id 对应一个 channel，所有订阅该 event_id 的客户端共享该 channel
+    static CLIENT_SUBSCRIPTIONS: OnceLock<Arc<RwLock<HashMap<String, ChannelMeta>>>> =
+        OnceLock::new();
+
+    const CLEANUP_INTERVAL: Duration = Duration::from_secs(45);
+    const CHANNEL_TTL: Duration = Duration::from_secs(90);
     /// 初始化函数
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use example_sse::sse_service::sse_service::init;
-    ///
-    /// assert_eq!(init(), );
-    /// ```
     pub async fn init() {
-        let (tx, _rx) = broadcast::channel(256);
-        SSE_BROAD_CAST.get_or_init(|| tx);
-        CLIENT_SUBSCRIPTIONS.get_or_init(|| RwLock::new(HashMap::new()));
+        let _ = CLIENT_SUBSCRIPTIONS.set(Arc::new(RwLock::new(HashMap::new())));
         info!("SSE service subscript initialized");
+        tokio::spawn(cleanup_inactive_clients());
     }
 
     /// Subscribe to an event
-    pub async fn subscribert(Path((event_id, event_type)): Path<(String, String)>) {
-        let subscriptions = CLIENT_SUBSCRIPTIONS.get().unwrap();
-        let mut r = subscriptions.write().unwrap();
-        if r.contains_key(&event_id) {
-            return;
-        }
-        info!("Subscribed to event: {} {}", event_id, event_type);
-        let tx = SSE_BROAD_CAST.get().unwrap().clone();
-        r.insert(event_id, tx);
+    pub async fn subscribert(Path((event_id, event_type)): Path<(String, String)>) -> Response {
+        let receiver = {
+            let mut subs = CLIENT_SUBSCRIPTIONS.get().unwrap().write().await;
+            let meta = subs.entry(event_id.clone()).or_insert_with(|| {
+                let (tx, _rx) = broadcast::channel::<Value>(1024);
+                info!("create channel: {} (type: {})", event_id, event_type);
+                ChannelMeta {
+                    sender: tx,
+                    last_activity: Mutex::new(Instant::now()),
+                }
+            });
+            meta.sender.subscribe()
+        };
+        info!(
+            "客户端订阅事件: {} / {} (活跃接收者: {})",
+            event_id,
+            event_type,
+            receiver.len()
+        );
+
+        let stream = async_stream::stream! {
+            let mut rx = receiver;
+            loop {
+                match rx.recv().await {
+                    Ok(json_value) => {
+                        // 成功接收消息，推送给客户端
+                        yield Ok::<_, Infallible>(
+                            Event::default()
+                                .json_data(json_value)
+                                .unwrap_or_else(|_| Event::default().data("serialization error"))
+                        );
+                    }
+                    Err(broadcast::error::RecvError::Lagged(count)) => {
+                        warn!("客户端落后，跳过 {} 条消息,event_id {}",count,event_id);
+                        yield Ok(Event::default()
+                            .event("error")
+                            .json_data(serde_json::json!({
+                                "code": "LAGGED",
+                                "message": format!("Skipped {} messages", count)
+                            }))
+                            .unwrap()
+                        );
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        info!("SSE channel closed: event_id={}", event_id);
+                        break;
+                    }
+                }
+            }
+        };
+        Sse::new(stream)
+            .keep_alive(
+                KeepAlive::new()
+                    .interval(Duration::from_secs(60))
+                    .text("keep-alive"),
+            )
+            .into_response()
     }
 
-    pub async fn sse_handler(
-        Path(event_id): Path<String>,
-        TypedHeader(user_agent): TypedHeader<headers::UserAgent>,
-    ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-        println!("`{}` connected", user_agent.as_str());
-        tracing::info!("`{}` sse event", event_id);
-        // A `Stream` that repeats an event every second
-        //
-        // You can also create streams from tokio channels using the wrappers in
-        // https://docs.rs/tokio-stream
-        let stream = stream::repeat_with(|| Event::default().data("hi!"))
-            .map(Ok)
-            .throttle(Duration::from_secs(1));
+    pub async fn send_message(
+        Path((event_id, _event_type)): Path<(String, String)>,
+        Json(message): Json<MessagePackage>,
+    ) -> Response<Body> {
+        let sse_sender = {
+            let subs = CLIENT_SUBSCRIPTIONS.get().unwrap().read().await;
+            if let Some(meta) = subs.get(&event_id) {
+                // * 表示解引用
+                *meta.last_activity.lock().unwrap() = Instant::now();
+                Some(meta.sender.clone())
+            } else {
+                None
+            }
+        }; // free the lock
 
-        Sse::new(stream).keep_alive(
-            axum::response::sse::KeepAlive::new()
-                .interval(Duration::from_secs(1))
-                .text("keep-alive-text"),
-        )
+        let Some(sender) = sse_sender else {
+            warn!(
+                "event_id = {},event_type = {},无活跃SSE订阅，消息被丢弃",
+                event_id, _event_type
+            );
+            return ResponseBuilder::builder(true).forbidden::<()>();
+        };
+
+        match sender.send(message.data.unwrap()) {
+            Ok(receivers_count) => {
+                info!(
+                    "event_id = {},event_type = {},receivers = {},消息广播成功",
+                    event_id, _event_type, receivers_count
+                );
+                ResponseBuilder::builder(true).ok()
+            }
+            Err(broadcast::error::SendError(dropped)) => {
+                error!(
+                    "event_id = {},event_type = {},消广播队列已满，消息丢失息 {}",
+                    event_id, _event_type, dropped
+                );
+                ResponseBuilder::builder(true).error(StatusCode::OK, "Fail", "Broadcast queue full")
+            }
+        }
+    }
+
+    /// cleanup inactive clients
+    pub async fn cleanup_inactive_clients() {
+        loop {
+            tokio::time::sleep(CLEANUP_INTERVAL).await;
+            let to_remove: Vec<String> = {
+                let r = CLIENT_SUBSCRIPTIONS.get().unwrap().read().await;
+                let now = Instant::now();
+                r.iter()
+                    .filter_map(|(id, meta)| {
+                        let last_activity = *meta.last_activity.lock().unwrap();
+                        // channel no message or ttl timeout
+                        if meta.sender.receiver_count() == 0 || now - last_activity > CHANNEL_TTL {
+                            Some(id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+
+            let removed_count = if !to_remove.is_empty() {
+                let mut w = CLIENT_SUBSCRIPTIONS.get().unwrap().write().await;
+                let before = w.len();
+                for id in to_remove {
+                    w.remove(&id);
+                }
+                before - w.len()
+            } else {
+                0
+            };
+
+            if removed_count > 0 {
+                info!("Cleaned up {} inactive channels", removed_count);
+            } else {
+                info!("No inactive channels to clean");
+            }
+        }
     }
 }

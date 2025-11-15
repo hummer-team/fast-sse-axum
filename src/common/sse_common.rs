@@ -17,11 +17,11 @@ pub mod sse_common {
             }
         }
 
-        pub fn ok(data: T) -> Self {
+        pub fn ok(data: Option<T>) -> Self {
             Self {
                 code: "ok".to_string(),
                 message: Some("success".to_string()),
-                data: Some(data),
+                data: data,
             }
         }
 

@@ -3,6 +3,7 @@ mod tests {
     use eventsource_stream::Eventsource;
     use tokio::net::TcpListener;
     use tokio_stream::StreamExt;
+    use tower_http::follow_redirect::policy::PolicyExt;
 
     use crate::sse_service::sse_service::app;
 
@@ -55,12 +56,12 @@ mod tests {
 
     #[test]
     pub fn path_params() {
-        let path: Vec<&str> = "/v1/events/{event_id}/types/{event_type}"
+        let params: Vec<&str> = "/v1/sse/events/carid000001/types/cart_changed"
             .split('/')
             .skip(1)
             .collect();
-        println!("{:?}", path);
-        assert_eq!(path.len(), 5);
-        assert_eq!(path[0], "v1");
+        println!("{:?}", params.len());
+        assert_eq!(params.get(3), Some(&"carid000001"));
+        assert_eq!(params.get(5), Some(&"cart_changed"));
     }
 }

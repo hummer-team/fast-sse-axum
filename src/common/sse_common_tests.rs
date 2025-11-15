@@ -4,7 +4,7 @@ mod sse_common_tests {
 
     #[test]
     pub fn test_resource() {
-        let mut response = ResourceResponse::ok("test");
+        let mut response = ResourceResponse::ok(Some("test"));
         assert_eq!(response.code, "ok");
 
         response = ResourceResponse::bad_request("test");

@@ -7,7 +7,7 @@ pub mod auth_middle {
         response::Response,
     };
     use std::{collections::HashSet, sync::Arc};
-    use tracing::{debug, error};
+    use tracing::{debug, error, info};
 
     #[derive(Clone)]
     pub struct AuthConfig {
@@ -48,29 +48,29 @@ pub mod auth_middle {
         next: Next,
     ) -> Result<Response, StatusCode> {
         let path = req.uri().path();
-        // request path /v1/events/:event_id/types/:event_type
-        let mut segments = path.split('/').skip(1);
+        // request path /v1/sse/events/{event_id}/types/{event_type}
+        let segments: Vec<&str> = path.split('/').skip(1).collect();
+        info!("request path: {}", path);
         let params = RquestParams {
-            event_id: segments.nth(2).ok_or(StatusCode::BAD_REQUEST)?.to_string(),
-            event_type: segments.nth(4).ok_or(StatusCode::BAD_REQUEST)?.to_string(),
+            event_id: segments.get(3).ok_or(StatusCode::BAD_REQUEST)?.to_string(),
+            event_type: segments.get(5).ok_or(StatusCode::BAD_REQUEST)?.to_string(),
         };
-
         if params.event_id.is_empty() || params.event_type.is_empty() {
-            debug!("Invalid event_id or event_type");
+            error!("Invalid event_id or event_type");
             return Err(StatusCode::BAD_REQUEST);
         }
 
         if config.allowed_event_ids.len() > 0
             && !config.allowed_event_ids.contains(&params.event_id)
         {
-            debug!("Event ID not allowed");
+            error!("Event ID {} not allowed", params.event_id);
             return Err(StatusCode::FORBIDDEN);
         }
 
         if config.allowed_event_types.len() > 0
             && !config.allowed_event_types.contains(&params.event_type)
         {
-            debug!("Event type not allowed");
+            error!("Event type {} not allowed", params.event_type);
             return Err(StatusCode::FORBIDDEN);
         }
 

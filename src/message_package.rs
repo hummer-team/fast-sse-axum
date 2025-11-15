@@ -3,47 +3,47 @@ pub mod message_package {
     use std::collections::HashMap;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct MessagePackage<'a, T> {
-        pub data: Option<T>,
-        pub headers: Option<HashMap<&'a str, &'a str>>,
-        pub message_name: &'a str,
-        pub message_id: &'a str,
-        pub user: Option<User<'a>>,
+    pub struct MessagePackage {
+        pub data: Option<serde_json::Value>,
+        pub headers: Option<HashMap<String, String>>,
+        pub message_name: String,
+        pub message_id: String,
+        pub user: Option<User>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct User<'a> {
-        pub from_user: &'a str,
-        pub to_user: &'a str,
+    pub struct User {
+        pub from_user: String,
+        pub to_user: String,
     }
 
-    impl<'a, T> MessagePackage<'a, T> {
+    impl MessagePackage {
         pub fn new(
-            message_name: &'a str,
-            message_id: &'a str,
-            from_user: &'a str,
-            to_user: &'a str,
-            data: Option<T>,
-            headers: Option<HashMap<&'a str, &'a str>>,
+            message_name: &str,
+            message_id: &str,
+            from_user: &str,
+            to_user: &str,
+            data: Option<serde_json::Value>,
+            headers: Option<HashMap<String, String>>,
         ) -> Self {
             MessagePackage {
-                message_name: message_name,
-                message_id: message_id,
+                message_name: message_name.to_string(),
+                message_id: message_id.to_string(),
                 user: Some(User {
-                    from_user: from_user,
-                    to_user: to_user,
+                    from_user: from_user.to_string(),
+                    to_user: to_user.to_string(),
                 }),
-                data,
-                headers,
+                data: data,
+                headers: headers,
             }
         }
 
         pub fn get_to_user(&self) -> Option<&str> {
-            self.user.as_ref().map(|u| u.to_user)
+            self.user.as_ref().map(|u| u.to_user.as_str())
         }
 
         pub fn get_from_user(&self) -> Option<&str> {
-            self.user.as_ref().map(|u| u.from_user)
+            self.user.as_ref().map(|u| u.from_user.as_str())
         }
 
         pub fn get_event_name(&self) -> &str {
@@ -51,10 +51,7 @@ pub mod message_package {
         }
     }
 
-    impl<'a, T> MessagePackage<'a, T>
-    where
-        T: Serialize,
-    {
+    impl MessagePackage {
         /// 将 MessagePackage 转换为 SSE 格式的字符串
         pub fn to_sse_format(&self) -> Result<String, serde_json::Error> {
             let mut sse_message = String::new();
