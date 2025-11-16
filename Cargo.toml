@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 # async-trait = "0.1.89"
-axum = "0.8.6"
+axum = "0.8.7"
 axum-extra = { version = "0.12.0", features = ["typed-header"] }
 futures-util = { version = "0.3", default-features = false, features = [
     "sink",
@@ -19,9 +19,14 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
 time = { version = "0.3.44", features = ["macros", "local-offset"] }
-tokio = { version = "1.0", features = ["full"] }
-tokio-stream = "0.1"
-tower-http = { version = "0.6.1", features = ["fs", "trace"] }
+tokio = { version = "1.44", features = ["full"] }
+tokio-stream = "0.1.17"
+tower-http = { version = "0.6.6", features = [
+    "fs",
+    "trace",
+    "compression-gzip",
+    "compression-zstd",
+] }
 tracing = "0.1"
 tracing-appender = { version = "0.2.3", default-features = false }
 tracing-subscriber = { version = "0.3", features = [
@@ -31,6 +36,14 @@ tracing-subscriber = { version = "0.3", features = [
 ] }
 dotenvy = "0.15.7"
 async-stream = "0.3.6"
+redis = { version = "0.32.7", features = ["tokio-comp", "connection-manager"] }
+tokio-util = "0.7.17"
+lazy_static = "1.5.0"
+dashmap = "6.1.0"
+bb8-redis = "0.24.0"
+# async-compression = "0.4.33"
+# hyper = { version = "1.8.1", features = ["http1", "http2", "server"] }
+# http-body = "1.0.1"
 [dev-dependencies]
 eventsource-stream = "0.2"
 reqwest = { version = "0.12", features = ["stream"] }

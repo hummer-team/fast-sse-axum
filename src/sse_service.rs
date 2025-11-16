@@ -1,6 +1,6 @@
 pub mod sse_service {
     use crate::auth_middle::auth_middle::{auth, AuthConfig};
-    use crate::message_package::message_package::MessagePackage;
+    use crate::message_package::message_package::EventPackage;
     use crate::response_builder::response_builder::ResponseBuilder;
     use axum::extract::Path;
     use axum::middleware::from_fn_with_state;
@@ -14,6 +14,7 @@ pub mod sse_service {
         routing::{get, post},
         Json, Router,
     };
+    // use dashmap::DashMap;
     use serde_json::Value;
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -54,16 +55,17 @@ pub mod sse_service {
 
         let config = Arc::new(AuthConfig::new(allowed_ids, secret, allowed_events));
 
+        // let compression_layer = event_compression::create_compression_layer();
         // build our application with a route
         let router = Router::new()
             .fallback_service(static_files_service)
             .route(
-                "/v1/sse/events/{event_id}/types/{event_type}",
+                "/v1/subscribe/events/{event_id}/types/{event_type}",
                 get(subscribert), // http method is get
             )
             .route(
                 "/v1/sse/events/{event_id}/types/{event_type}",
-                post(send_message), // http method is post
+                post(send_message_with_web_request), // http method is post
             )
             .layer(from_fn_with_state(config.into(), auth))
             .layer(TraceLayer::new_for_http());
@@ -82,7 +84,7 @@ pub mod sse_service {
 
     const CLEANUP_INTERVAL: Duration = Duration::from_secs(45);
     const CHANNEL_TTL: Duration = Duration::from_secs(90);
-    /// 初始化函数
+    /// init
     pub async fn init() {
         let _ = CLIENT_SUBSCRIPTIONS.set(Arc::new(RwLock::new(HashMap::new())));
         info!("SSE service subscript initialized");
@@ -115,7 +117,7 @@ pub mod sse_service {
             loop {
                 match rx.recv().await {
                     Ok(json_value) => {
-                        // 成功接收消息，推送给客户端
+                        // push message to client
                         yield Ok::<_, Infallible>(
                             Event::default()
                                 .json_data(json_value)
@@ -149,13 +151,10 @@ pub mod sse_service {
             .into_response()
     }
 
-    pub async fn send_message(
-        Path((event_id, _event_type)): Path<(String, String)>,
-        Json(message): Json<MessagePackage>,
-    ) -> Response<Body> {
+    pub async fn send_message(message: EventPackage) -> Result<bool, Option<String>> {
         let sse_sender = {
             let subs = CLIENT_SUBSCRIPTIONS.get().unwrap().read().await;
-            if let Some(meta) = subs.get(&event_id) {
+            if let Some(meta) = subs.get(&message.event_id) {
                 // * 表示解引用
                 *meta.last_activity.lock().unwrap() = Instant::now();
                 Some(meta.sender.clone())
@@ -166,27 +165,64 @@ pub mod sse_service {
 
         let Some(sender) = sse_sender else {
             warn!(
-                "event_id = {},event_type = {},无活跃SSE订阅，消息被丢弃",
-                event_id, _event_type
+                "event_id = {},event_type = {},No active SSE subscription; messages discarded.",
+                message.event_id, message.event_name
             );
-            return ResponseBuilder::builder(true).forbidden::<()>();
+            return Result::Err(Some(
+                "No active SSE subscription; messages discarded.".to_string(),
+            ));
         };
 
         match sender.send(message.data.unwrap()) {
             Ok(receivers_count) => {
                 info!(
-                    "event_id = {},event_type = {},receivers = {},消息广播成功",
-                    event_id, _event_type, receivers_count
+                    "event_id = {},event_type = {},receivers = {},Broadcast successful",
+                    message.event_id, message.event_id, receivers_count
                 );
-                ResponseBuilder::builder(true).ok()
+                Result::Ok(true)
             }
             Err(broadcast::error::SendError(dropped)) => {
                 error!(
-                    "event_id = {},event_type = {},消广播队列已满，消息丢失息 {}",
-                    event_id, _event_type, dropped
+                    "event_id = {},event_type = {},Broadcast queue full {}",
+                    message.event_id,
+                    message.event_type.unwrap_or_default(),
+                    dropped
                 );
-                ResponseBuilder::builder(true).error(StatusCode::OK, "Fail", "Broadcast queue full")
+                Result::Err(Some("Broadcast queue full".to_string()))
             }
+        }
+    }
+
+    pub async fn send_message_with_web_request(
+        Path((event_id, event_type)): Path<(String, String)>,
+        Json(message): Json<EventPackage>,
+    ) -> Response<Body> {
+        // move the data into a variable
+        let EventPackage {
+            data,
+            headers,
+            event_name,
+            user,
+            ..
+        } = message;
+        let event = EventPackage::new(
+            event_name,
+            event_id,
+            user.as_ref().unwrap().from_user.to_string(),
+            user.as_ref().unwrap().to_user.to_string(),
+            data,
+            headers,
+            Some(event_type),
+        );
+        // send message
+        match send_message(event).await {
+            // ignore ok responses values
+            Ok(..) => ResponseBuilder::builder(false).ok(),
+            Err(error) => ResponseBuilder::builder(false).error(
+                StatusCode::OK,
+                "Fail",
+                error.unwrap().as_str(),
+            ),
         }
     }
 

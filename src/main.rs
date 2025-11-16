@@ -1,5 +1,6 @@
 use example_sse::log_wrapper::log_wrapper::init;
-use example_sse::sse_service::sse_service::app;
+use example_sse::redis_stream::redis_stream;
+use example_sse::sse_service::sse_service;
 use tracing::log::info;
 
 #[tokio::main]
@@ -9,9 +10,11 @@ async fn main() {
     // Initialize logger
     let _guard = init();
     // build our application
-    let app = app();
+    let app = sse_service::app();
     // initialize sse service
-    example_sse::sse_service::sse_service::init().await;
+    sse_service::init().await;
+    // initialize redis stream
+    redis_stream::init().await;
     info!("sse_service init done, starting server at 0.0.0.0:30000");
     // run it
     let listener = tokio::net::TcpListener::bind("0.0.0.0:30000")

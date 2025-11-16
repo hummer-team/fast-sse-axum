@@ -48,6 +48,10 @@ pub mod auth_middle {
         next: Next,
     ) -> Result<Response, StatusCode> {
         let path = req.uri().path();
+        if path.eq("/") {
+            return Ok(next.run(req).await);
+        }
+        
         // request path /v1/sse/events/{event_id}/types/{event_type}
         let segments: Vec<&str> = path.split('/').skip(1).collect();
         info!("request path: {}", path);

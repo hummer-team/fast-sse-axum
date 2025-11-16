@@ -6,7 +6,6 @@ pub mod response_builder {
         http::{header, Response, StatusCode},
         response::Json,
     };
-    use std::convert::Infallible;
 
     pub struct ResponseBuilder {
         close: bool,
