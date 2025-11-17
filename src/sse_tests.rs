@@ -1,11 +1,9 @@
 #[cfg(test)]
 mod tests {
+    use crate::sse_service::sse_service::app;
     use eventsource_stream::Eventsource;
     use tokio::net::TcpListener;
     use tokio_stream::StreamExt;
-    use tower_http::follow_redirect::policy::PolicyExt;
-
-    use crate::sse_service::sse_service::app;
 
     #[tokio::test]
     async fn integration_test() {

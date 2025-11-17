@@ -27,7 +27,7 @@ pub mod sse_service {
     use tokio::sync::broadcast;
     use tokio::sync::RwLock;
     use tower_http::{services::ServeDir, trace::TraceLayer};
-    use tracing::log::{error, info, warn};
+    use tracing::log::{debug, error, info, warn};
 
     /// SSE service enter
     pub fn app() -> Router {
@@ -106,7 +106,7 @@ pub mod sse_service {
             meta.sender.subscribe()
         };
         info!(
-            "客户端订阅事件: {} / {} (活跃接收者: {})",
+            "client subscribe event: {} / {} (receiver: {})",
             event_id,
             event_type,
             receiver.len()
@@ -125,7 +125,7 @@ pub mod sse_service {
                         );
                     }
                     Err(broadcast::error::RecvError::Lagged(count)) => {
-                        warn!("客户端落后，跳过 {} 条消息,event_id {}",count,event_id);
+                        warn!("skip message {} count,event_id {}",count,event_id);
                         yield Ok(Event::default()
                             .event("error")
                             .json_data(serde_json::json!({
@@ -151,10 +151,10 @@ pub mod sse_service {
             .into_response()
     }
 
-    pub async fn send_message(message: EventPackage) -> Result<bool, Option<String>> {
+    pub async fn send_message(message: EventPackage) -> Result<bool, Option<(String, String)>> {
         let sse_sender = {
             let subs = CLIENT_SUBSCRIPTIONS.get().unwrap().read().await;
-            if let Some(meta) = subs.get(&message.event_id) {
+            if let Some(meta) = subs.get(&message.get_event_id()) {
                 // * 表示解引用
                 *meta.last_activity.lock().unwrap() = Instant::now();
                 Some(meta.sender.clone())
@@ -166,29 +166,38 @@ pub mod sse_service {
         let Some(sender) = sse_sender else {
             warn!(
                 "event_id = {},event_type = {},No active SSE subscription; messages discarded.",
-                message.event_id, message.event_name
+                message.get_event_id(),
+                message.event_name
             );
-            return Result::Err(Some(
+            let msg = (
+                "NO_ACTIVE_SUBSCRIPTION".to_string(),
                 "No active SSE subscription; messages discarded.".to_string(),
-            ));
+            );
+            return Result::Err(Some(msg));
         };
+
+        let event_id = message.get_event_id();
+        let event_name = message.get_event_name();
+        let event_type = message.get_event_type();
 
         match sender.send(message.data.unwrap()) {
             Ok(receivers_count) => {
                 info!(
                     "event_id = {},event_type = {},receivers = {},Broadcast successful",
-                    message.event_id, message.event_id, receivers_count
+                    event_id, event_name, receivers_count
                 );
                 Result::Ok(true)
             }
             Err(broadcast::error::SendError(dropped)) => {
                 error!(
                     "event_id = {},event_type = {},Broadcast queue full {}",
-                    message.event_id,
-                    message.event_type.unwrap_or_default(),
-                    dropped
+                    event_id, event_type, dropped
                 );
-                Result::Err(Some("Broadcast queue full".to_string()))
+                let msg = (
+                    "SEND_FAIL".to_string(),
+                    "No active SSE subscription; messages discarded.".to_string(),
+                );
+                Result::Err(Some(msg))
             }
         }
     }
@@ -214,6 +223,7 @@ pub mod sse_service {
             headers,
             Some(event_type),
         );
+        debug!("Sending message to client: {:?}", event);
         // send message
         match send_message(event).await {
             // ignore ok responses values
@@ -221,7 +231,7 @@ pub mod sse_service {
             Err(error) => ResponseBuilder::builder(false).error(
                 StatusCode::OK,
                 "Fail",
-                error.unwrap().as_str(),
+                error.unwrap().1.as_str(),
             ),
         }
     }

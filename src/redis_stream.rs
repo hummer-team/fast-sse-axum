@@ -6,16 +6,16 @@ pub mod redis_stream {
     use bb8_redis::RedisConnectionManager;
     use lazy_static::lazy_static;
     use redis::{streams::StreamReadReply, AsyncCommands, RedisResult};
+    use redis::{ErrorKind, RedisError};
     use serde_json;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
-    use tracing::{error, info};
+    use tracing::{debug, error, info};
 
     // Redis Stream
     pub const DEFAULT_STREAM_NAME: &str = "sse:events";
     pub const DEFAULT_GROUP_NAME: &str = "sse_consumers";
     pub const CONSUMER_NAME_PREFIX: &str = "sse-server";
-    pub const STREAM_MESSAGE_FIELD: &str = "message";
 
     pub type RedisPool = Arc<Pool<RedisConnectionManager>>;
 
@@ -58,22 +58,38 @@ pub mod redis_stream {
                 );
             }
             Err(e) => {
-                error!(
-                    "created group fail stream name {} group name {} error {}",
-                    stream_name.as_str(),
-                    group_name.as_str(),
-                    e
-                );
-                // panic sys exception
-                panic!(
-                    "created group fail stream name {} group name {} error {}",
-                    stream_name.as_str(),
-                    group_name.as_str(),
-                    e
-                );
+                if is_busygroup_error(&e) {
+                    info!(
+                        "Consumer group {} already exists for stream {}",
+                        group_name.as_str(),
+                        stream_name.as_str()
+                    );
+                    return Ok(());
+                } else {
+                    error!(
+                        "created group fail stream name {} group name {} error {}",
+                        stream_name.as_str(),
+                        group_name.as_str(),
+                        e
+                    );
+                    // panic sys exception
+                    panic!(
+                        "created group fail stream name {} group name {} error {}",
+                        stream_name.as_str(),
+                        group_name.as_str(),
+                        e
+                    );
+                }
             }
         }
         Ok(())
+    }
+
+    fn is_busygroup_error(err: &RedisError) -> bool {
+        if let Some(code) = err.code() {
+            return code == "BUSYGROUP";
+        }
+        matches!(err.kind(), ErrorKind::ResponseError) && err.to_string().contains("BUSYGROUP")
     }
 
     /// parse stream message to MessagePackage
@@ -81,20 +97,19 @@ pub mod redis_stream {
         id: &str,
         fields: &std::collections::HashMap<String, redis::Value>,
     ) -> Result<EventPackage, String> {
-        let redis_value = fields
-            .get(STREAM_MESSAGE_FIELD)
-            .ok_or_else(|| format!("Missing '{}' field in message {}", STREAM_MESSAGE_FIELD, id))?;
+        for (key, value) in fields.iter() {
+            debug!("origin message key: {}, value: {:?}", key, value);
+        }
+        let (_key, value) = fields.iter().next().ok_or("No fields")?;
 
-        // convert Redis Value to string
-        let json_str: String = redis::from_redis_value(redis_value)
-            .map_err(|e| format!("Failed to convert Redis value to string for {}: {}", id, e))?;
+        let bytes = match value {
+            redis::Value::BulkString(b) => b,
+            // redis::Value::Status(s) => s,
+            _ => return Err(format!("Invalid value type: {:?}", value)),
+        };
 
-        serde_json::from_str::<EventPackage>(&json_str).map_err(|e| {
-            format!(
-                "JSON parse error for message {}: {}. Raw: {}",
-                id, e, json_str
-            )
-        })
+        serde_json::from_slice::<EventPackage>(bytes)
+            .map_err(|e| format!("JSON error for {}: {}", id, e))
     }
 
     async fn process_stream_entries(
@@ -103,6 +118,10 @@ pub mod redis_stream {
     ) -> RedisResult<()> {
         let mut conn = redis_pool::get_conn(redis_pool).await?;
         for stream_key in entries {
+            info!(
+                "Processing stream entry: {:?}, stream message {:?}",
+                stream_key.key, stream_key.ids
+            );
             if stream_key.key != stream_name.to_string() {
                 continue;
             }
@@ -116,9 +135,26 @@ pub mod redis_stream {
                             let _: RedisResult<i32> = conn
                                 .xack(stream_name.as_str(), group_name.as_str(), &[msg_id])
                                 .await;
+                            info!(
+                                "send message success, ack message success msg id :{}",
+                                msg_id
+                            );
                         }
-                        Err(e) => error!("send message error: {:?}", e),
+                        Err(e) => {
+                            error!("send message error: {:?}", e);
+                            let def = ("NA".to_string(), "NA".to_string());
+                            if e.unwrap_or(def).0 == "NO_ACTIVE_SUBSCRIPTION" {
+                                let _: RedisResult<i32> = conn
+                                    .xack(stream_name.as_str(), group_name.as_str(), &[msg_id])
+                                    .await;
+                                info!(
+                                    "no active subscription, ack message success msg id :{}",
+                                    msg_id
+                                );
+                            }
+                        }
                     },
+                    // :? debug format print log
                     Err(e) => error!("get message error: {:?}", e),
                 }
             }
@@ -172,15 +208,12 @@ pub mod redis_stream {
             .block(1000);
 
         if read_pending {
-            let _: RedisResult<Vec<redis::Value>> = redis::cmd("XPENDING")
-                .arg(stream_name.as_str())
-                .arg(group_name.as_str())
-                .arg("0")
-                .arg("+")
-                .arg("10")
-                .query_async(&mut *conn)
+            // read pending messages index 0...
+            return conn
+                .xread_options(&[stream_name.as_str()], &["0"], &opts)
                 .await;
         }
+        // read last messages
         conn.xread_options(&[stream_name.as_str()], &[">"], &opts)
             .await
     }

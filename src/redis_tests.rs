@@ -55,19 +55,19 @@ mod redis_tests {
 
                 let msg = message_package::EventPackage::new(
                     "message".to_string(),
-                    "message_id".to_string(),
+                    "carid000001".to_string(),
                     "alice".to_string(),
                     "bob".to_string(),
-                    serde_json::to_value("Hello, World!").ok(),
+                    serde_json::to_value("Hello, World!445").ok(),
                     Some(map),
-                    None,
+                    Some("cart_changed".to_string()),
                 );
                 let msg_json = serde_json::to_string(&msg).unwrap();
 
                 let result: Result<String, RedisError> = redis::cmd("xadd")
-                    .arg("test_stream")
+                    .arg("sse:events")
                     .arg("*")
-                    .arg("id:123")
+                    .arg("carid000001")
                     .arg(&msg_json)
                     .query_async(&mut *conn)
                     .await;
