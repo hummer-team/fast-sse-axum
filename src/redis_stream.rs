@@ -3,6 +3,7 @@ pub mod redis_stream {
     use crate::redis_pool::redis_pool;
     use crate::sse_service::sse_service;
     use bb8_redis::bb8::Pool;
+    use bb8_redis::bb8::PooledConnection;
     use bb8_redis::RedisConnectionManager;
     use lazy_static::lazy_static;
     use redis::{streams::StreamReadReply, AsyncCommands, RedisResult};
@@ -113,10 +114,10 @@ pub mod redis_stream {
     }
 
     async fn process_stream_entries(
-        redis_pool: &RedisPool,
+        conn: &mut PooledConnection<'_, RedisConnectionManager>,
         entries: &[redis::streams::StreamKey],
     ) -> RedisResult<()> {
-        let mut conn = redis_pool::get_conn(redis_pool).await?;
+        // let mut conn = redis_pool::get_conn(redis_pool).await?;
         for stream_key in entries {
             info!(
                 "Processing stream entry: {:?}, stream message {:?}",
@@ -169,17 +170,18 @@ pub mod redis_stream {
         let consumer_name = format!("{}:{}", CONSUMER_NAME_PREFIX, "1");
         let mut read_pending = true;
         loop {
+            let mut conn = redis_pool::get_conn(&redis_pool).await?;
             tokio::select! {
                 _ = shutdown.cancelled() => {
                     info!("Redis stream listener shutting down");
                     break;
                 }
-                result = read_stream_messages(&redis_pool, &consumer_name, read_pending) => {
+                result = read_stream_messages(&mut conn, &consumer_name, read_pending) => {
                     match result {
                         Ok(reply) => {
                             read_pending = false;
                             // handler message
-                            if let Err(e) = process_stream_entries(&redis_pool, &reply.keys).await {
+                            if let Err(e) = process_stream_entries(&mut conn, &reply.keys).await {
                                 error!("Failed to process stream entries: {}", e);
                             }
                         }
@@ -196,11 +198,11 @@ pub mod redis_stream {
     }
 
     async fn read_stream_messages(
-        redis_pool: &RedisPool,
+        conn: &mut PooledConnection<'_, RedisConnectionManager>,
         consumer_name: &str,
         read_pending: bool,
     ) -> RedisResult<StreamReadReply> {
-        let mut conn = redis_pool::get_conn(redis_pool).await?;
+        // let mut conn = redis_pool::get_conn(redis_pool).await?;
         // let mut conn = pool.get_multiplexed_tokio_connection().await?;
         let opts = redis::streams::StreamReadOptions::default()
             .group(group_name.as_str(), consumer_name)
