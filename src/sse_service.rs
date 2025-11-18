@@ -83,7 +83,7 @@ pub mod sse_service {
         OnceLock::new();
 
     const CLEANUP_INTERVAL: Duration = Duration::from_secs(45);
-    const CHANNEL_TTL: Duration = Duration::from_secs(90);
+    const CHANNEL_TTL: Duration = Duration::from_secs(120);
     /// init
     pub async fn init() {
         let _ = CLIENT_SUBSCRIPTIONS.set(Arc::new(RwLock::new(HashMap::new())));
@@ -223,7 +223,11 @@ pub mod sse_service {
             headers,
             Some(event_type),
         );
-        debug!("Sending message to client: {:?}", event);
+        debug!(
+            "sending message to client message id: {} message type: {}",
+            event.get_event_id(),
+            event.get_event_type()
+        );
         // send message
         match send_message(event).await {
             // ignore ok responses values
@@ -239,6 +243,7 @@ pub mod sse_service {
     /// cleanup inactive clients
     pub async fn cleanup_inactive_clients() {
         loop {
+            //noblock thread
             tokio::time::sleep(CLEANUP_INTERVAL).await;
             let to_remove: Vec<String> = {
                 let r = CLIENT_SUBSCRIPTIONS.get().unwrap().read().await;

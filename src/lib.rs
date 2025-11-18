@@ -11,3 +11,4 @@ mod redis_tests;
 pub mod response_builder;
 pub mod sse_service;
 mod sse_tests;
+pub mod tcp_configuration;
