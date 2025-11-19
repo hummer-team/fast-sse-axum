@@ -1,8 +1,8 @@
 mod auth_middle;
 pub mod common;
-mod event_compression;
 mod log_tests;
 pub mod log_wrapper;
+mod message_compression;
 pub mod message_package;
 mod message_package_tests;
 pub mod redis_pool;

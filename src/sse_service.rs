@@ -1,5 +1,6 @@
 pub mod sse_service {
     use crate::auth_middle::auth_middle::{auth, AuthConfig};
+    use crate::message_compression::message_compression::process_and_compress_event;
     use crate::message_package::message_package::EventPackage;
     use crate::response_builder::response_builder::ResponseBuilder;
     use axum::extract::Path;
@@ -55,7 +56,6 @@ pub mod sse_service {
 
         let config = Arc::new(AuthConfig::new(allowed_ids, secret, allowed_events));
 
-        // let compression_layer = event_compression::create_compression_layer();
         // build our application with a route
         let router = Router::new()
             .fallback_service(static_files_service)
@@ -118,11 +118,13 @@ pub mod sse_service {
                 match rx.recv().await {
                     Ok(json_value) => {
                         // push message to client
-                        yield Ok::<_, Infallible>(
-                            Event::default()
-                                .json_data(json_value)
-                                .unwrap_or_else(|_| Event::default().data("serialization error"))
-                        );
+                        // yield Ok::<_, Infallible>(
+                        //     Event::default()
+                        //         .json_data(json_value)
+                        //         .unwrap_or_else(|_| Event::default().data("serialization error"))
+                        // );
+                        let event = process_and_compress_event(json_value);
+                        yield Ok::<_, Infallible>(event);
                     }
                     Err(broadcast::error::RecvError::Lagged(count)) => {
                         warn!("skip message {} count,event_id {}",count,event_id);
