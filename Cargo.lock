@@ -421,7 +421,6 @@ dependencies = [
  "headers",
  "hex",
  "hmac",
- "lazy_static",
  "redis",
  "reqwest",
  "reqwest-eventsource",

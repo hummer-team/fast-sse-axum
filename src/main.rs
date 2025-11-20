@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // initialize sse service
     sse_service::init().await;
     // initialize redis stream
-    redis_stream::init().await;
+    redis_stream::init().await?;
     info!("sse_service init done, starting server at 0.0.0.0:30000");
     // run it
     //let listener = tokio::net::TcpListener::bind("0.0.0.0:30000")

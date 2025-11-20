@@ -59,7 +59,7 @@ pub mod message_compression {
             .unwrap_or(false)
     }
 
-    fn compress_and_encode(json_value: &Value) -> Result<Value, Box<dyn std::error::Error>> {
+    pub fn compress_and_encode(json_value: &Value) -> Result<Value, Box<dyn std::error::Error>> {
         let data_bytes = serde_json::to_vec(json_value)?;
         let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
         encoder.write_all(&data_bytes)?;

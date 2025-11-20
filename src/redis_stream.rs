@@ -5,38 +5,34 @@ pub mod redis_stream {
     use bb8_redis::bb8::Pool;
     use bb8_redis::bb8::PooledConnection;
     use bb8_redis::RedisConnectionManager;
-    use lazy_static::lazy_static;
     use redis::{streams::StreamReadReply, AsyncCommands, RedisResult};
     use redis::{ErrorKind, RedisError};
     use serde_json;
-    use std::sync::Arc;
+    use std::sync::OnceLock;
+    use std::time::Duration;
     use tokio_util::sync::CancellationToken;
-    use tracing::{debug, error, info};
+    use tracing::{debug, error, info, warn};
 
     // Redis Stream
     pub const DEFAULT_STREAM_NAME: &str = "sse:events";
     pub const DEFAULT_GROUP_NAME: &str = "sse_consumers";
     pub const CONSUMER_NAME_PREFIX: &str = "sse-server";
 
-    pub type RedisPool = Arc<Pool<RedisConnectionManager>>;
-
-    lazy_static! {
-        pub static ref stream_name: String =
-            std::env::var("REDIS_STREAM_NAME").unwrap_or(DEFAULT_STREAM_NAME.to_string());
-        pub static ref group_name: String =
-            std::env::var("REDIS_GROUP_NAME").unwrap_or(DEFAULT_GROUP_NAME.to_string());
-    }
+    pub type RedisPool = Pool<RedisConnectionManager>;
 
     /// Initialize redis connection pool
-    pub async fn init() {
+    pub async fn init() -> Result<(), Box<dyn std::error::Error>> {
         // init redis connection pool
-        let redis_cnn = redis_pool::create_redis_pool().await;
+        let redis_cnn = redis_pool::create_redis_pool()
+            .await
+            .expect("Failed to initialize Redis connection pool");
         // ensure consumer group
-        let _ = ensure_consumer_group(&redis_cnn).await;
+        ensure_consumer_group(&redis_cnn).await?;
         let shutdown = CancellationToken::new();
         let listener_shutdown = shutdown.clone();
         // start stream listener
         tokio::spawn(async move { run_stream_listener(redis_cnn, listener_shutdown).await });
+        Ok(())
     }
 
     /// ensure consumer group
@@ -44,8 +40,8 @@ pub mod redis_stream {
         let mut conn = redis_pool::get_conn(pool).await?;
         let r: RedisResult<()> = redis::cmd("XGROUP")
             .arg("CREATE")
-            .arg(stream_name.as_str())
-            .arg(group_name.as_str())
+            .arg(stream_name())
+            .arg(group_name())
             .arg("$")
             .arg("MKSTREAM")
             .query_async(&mut *conn)
@@ -54,36 +50,30 @@ pub mod redis_stream {
             Ok(..) => {
                 info!(
                     "created group success stream name {} group name {}",
-                    stream_name.as_str(),
-                    group_name.as_str()
+                    stream_name(),
+                    group_name()
                 );
+                Ok(())
             }
             Err(e) => {
                 if is_busygroup_error(&e) {
                     info!(
                         "Consumer group {} already exists for stream {}",
-                        group_name.as_str(),
-                        stream_name.as_str()
+                        group_name(),
+                        stream_name()
                     );
-                    return Ok(());
+                    Ok(())
                 } else {
                     error!(
                         "created group fail stream name {} group name {} error {}",
-                        stream_name.as_str(),
-                        group_name.as_str(),
+                        stream_name(),
+                        group_name(),
                         e
                     );
-                    // panic sys exception
-                    panic!(
-                        "created group fail stream name {} group name {} error {}",
-                        stream_name.as_str(),
-                        group_name.as_str(),
-                        e
-                    );
+                    Err(e)
                 }
             }
         }
-        Ok(())
     }
 
     fn is_busygroup_error(err: &RedisError) -> bool {
@@ -97,7 +87,7 @@ pub mod redis_stream {
     fn parse_stream_message(
         id: &str,
         fields: &std::collections::HashMap<String, redis::Value>,
-    ) -> Result<EventPackage, String> {
+    ) -> Result<EventPackage, Box<dyn std::error::Error + Send + Sync>> {
         for (key, value) in fields.iter() {
             debug!("origin message key: {}, value: {:?}", key, value);
         }
@@ -106,11 +96,11 @@ pub mod redis_stream {
         let bytes = match value {
             redis::Value::BulkString(b) => b,
             // redis::Value::Status(s) => s,
-            _ => return Err(format!("Invalid value type: {:?}", value)),
+            _ => return Err(format!("Invalid value type: {:?}", value).into()),
         };
 
         serde_json::from_slice::<EventPackage>(bytes)
-            .map_err(|e| format!("JSON error for {}: {}", id, e))
+            .map_err(|e| format!("JSON deserialization error for message {}: {}", id, e).into())
     }
 
     async fn process_stream_entries(
@@ -123,7 +113,7 @@ pub mod redis_stream {
                 "Processing stream entry: {:?}, stream message {:?}",
                 stream_key.key, stream_key.ids
             );
-            if stream_key.key != stream_name.to_string() {
+            if stream_key.key != *stream_name() {
                 continue;
             }
             for stream_id in &stream_key.ids {
@@ -133,9 +123,8 @@ pub mod redis_stream {
                     // send message
                     Ok(msg) => match sse_service::send_message(msg).await {
                         Ok(..) => {
-                            let _: RedisResult<i32> = conn
-                                .xack(stream_name.as_str(), group_name.as_str(), &[msg_id])
-                                .await;
+                            let _: RedisResult<i32> =
+                                conn.xack(stream_name(), group_name(), &[msg_id]).await;
                             info!(
                                 "send message success, ack message success msg id :{}",
                                 msg_id
@@ -145,10 +134,9 @@ pub mod redis_stream {
                             error!("send message error: {:?}", e);
                             let def = ("NA".to_string(), "NA".to_string());
                             if e.unwrap_or(def).0 == "NO_ACTIVE_SUBSCRIPTION" {
-                                let _: RedisResult<i32> = conn
-                                    .xack(stream_name.as_str(), group_name.as_str(), &[msg_id])
-                                    .await;
-                                info!(
+                                let _: RedisResult<i32> =
+                                    conn.xack(stream_name(), group_name(), &[msg_id]).await;
+                                warn!(
                                     "no active subscription, ack message success msg id :{}",
                                     msg_id
                                 );
@@ -167,27 +155,55 @@ pub mod redis_stream {
         redis_pool: RedisPool,
         shutdown: CancellationToken,
     ) -> RedisResult<()> {
-        let consumer_name = format!("{}:{}", CONSUMER_NAME_PREFIX, "1");
-        let mut read_pending = true;
+        let consumer_name = format!("{}:{}", CONSUMER_NAME_PREFIX, std::process::id());
+        info!(
+            "Starting Redis stream listener with consumer name: {}",
+            consumer_name
+        );
+
+        if let Ok(mut conn) = redis_pool::get_conn(&redis_pool).await {
+            info!("Checking for pending messages...");
+            match read_stream_messages(&mut conn, &consumer_name, true).await {
+                Ok(reply) if !reply.keys.is_empty() => {
+                    if let Err(e) = process_stream_entries(&mut conn, &reply.keys).await {
+                        error!("Failed to process pending stream entries: {}", e);
+                    }
+                }
+                Err(e) => error!("Failed to read pending messages: {}", e),
+                _ => info!("No pending messages found."),
+            }
+        }
+
         loop {
-            let mut conn = redis_pool::get_conn(&redis_pool).await?;
+            let mut conn = match redis_pool::get_conn(&redis_pool).await {
+                Ok(c) => c,
+                Err(e) => {
+                    error!(
+                        "Failed to get Redis connection from pool: {}. Retrying in 5s.",
+                        e
+                    );
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
             tokio::select! {
                 _ = shutdown.cancelled() => {
                     info!("Redis stream listener shutting down");
                     break;
                 }
-                result = read_stream_messages(&mut conn, &consumer_name, read_pending) => {
+                result = read_stream_messages(&mut conn, &consumer_name, false) => {
                     match result {
                         Ok(reply) => {
-                            read_pending = false;
                             // handler message
-                            if let Err(e) = process_stream_entries(&mut conn, &reply.keys).await {
-                                error!("Failed to process stream entries: {}", e);
+                            if !reply.keys.is_empty() {
+                                if let Err(e) = process_stream_entries(&mut conn, &reply.keys).await {
+                                    error!("Failed to process stream entries: {}", e);
+                                }
                             }
                         }
                         Err(e) => {
                             error!("Failed to read stream messages: {}", e);
-                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                            tokio::time::sleep(Duration::from_secs(5)).await;
                         }
                     }
                 }
@@ -202,21 +218,33 @@ pub mod redis_stream {
         consumer_name: &str,
         read_pending: bool,
     ) -> RedisResult<StreamReadReply> {
-        // let mut conn = redis_pool::get_conn(redis_pool).await?;
-        // let mut conn = pool.get_multiplexed_tokio_connection().await?;
         let opts = redis::streams::StreamReadOptions::default()
-            .group(group_name.as_str(), consumer_name)
+            .group(group_name(), consumer_name)
             .count(10)
             .block(1000);
-
-        if read_pending {
-            // read pending messages index 0...
-            return conn
-                .xread_options(&[stream_name.as_str()], &["0"], &opts)
-                .await;
-        }
-        // read last messages
-        conn.xread_options(&[stream_name.as_str()], &[">"], &opts)
+        let stream_id = if read_pending {
+            // "0" reads all pending messages for this consumer that were not acknowledged.
+            "0"
+        } else {
+            // ">" reads new messages that have not been delivered to any consumer in the group.
+            ">"
+        };
+        // read messages
+        conn.xread_options(&[stream_name()], &[stream_id], &opts)
             .await
+    }
+
+    fn stream_name() -> &'static String {
+        static STREAM_NAME: OnceLock<String> = OnceLock::new();
+        STREAM_NAME.get_or_init(|| {
+            std::env::var("REDIS_STREAM_NAME").unwrap_or_else(|_| DEFAULT_STREAM_NAME.to_string())
+        })
+    }
+
+    fn group_name() -> &'static String {
+        static GROUP_NAME: OnceLock<String> = OnceLock::new();
+        GROUP_NAME.get_or_init(|| {
+            std::env::var("REDIS_GROUP_NAME").unwrap_or_else(|_| DEFAULT_GROUP_NAME.to_string())
+        })
     }
 }

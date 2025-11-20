@@ -3,6 +3,7 @@ pub mod common;
 mod log_tests;
 pub mod log_wrapper;
 mod message_compression;
+mod message_compression_tests;
 pub mod message_package;
 mod message_package_tests;
 pub mod redis_pool;
