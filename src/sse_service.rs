@@ -75,7 +75,7 @@ pub mod sse_service {
     }
 
     struct ChannelMeta {
-        sender: broadcast::Sender<Value>,
+        sender: broadcast::Sender<Arc<Value>>,
         last_activity: Mutex<Instant>,
     }
 
@@ -97,7 +97,7 @@ pub mod sse_service {
         let receiver = {
             let mut subs = CLIENT_SUBSCRIPTIONS.get().unwrap().write().await;
             let meta = subs.entry(event_id.clone()).or_insert_with(|| {
-                let (tx, _rx) = broadcast::channel::<Value>(1024);
+                let (tx, _rx) = broadcast::channel::<Arc<Value>>(1024);
                 info!("create channel: {} (type: {})", event_id, event_type);
                 ChannelMeta {
                     sender: tx,
@@ -124,7 +124,7 @@ pub mod sse_service {
                         //         .json_data(json_value)
                         //         .unwrap_or_else(|_| Event::default().data("serialization error"))
                         // );
-                        let event = process_and_compress_event(json_value);
+                        let event = process_and_compress_event(&json_value);
                         yield Ok::<_, Infallible>(event);
                     }
                     Err(broadcast::error::RecvError::Lagged(count)) => {
@@ -183,7 +183,7 @@ pub mod sse_service {
         let event_name = message.get_event_name();
         let event_type = message.get_event_type();
 
-        match sender.send(message.data.unwrap()) {
+        match sender.send(Arc::new(message.data.unwrap())) {
             Ok(receivers_count) => {
                 info!(
                     "event_id = {},event_type = {},receivers = {},Broadcast successful",

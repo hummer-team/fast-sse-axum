@@ -28,15 +28,15 @@ pub mod message_compression {
     }
 
     /// process and compress an SSE event
-    pub fn process_and_compress_event(json_value: Value) -> Event {
+    pub fn process_and_compress_event(json_value: &Value) -> Event {
         if !is_compression_enabled() {
-            return Event::default().json_data(&json_value).unwrap_or_else(|e| {
+            return Event::default().json_data(json_value).unwrap_or_else(|e| {
                 warn!("sse event serialization error: {}", e);
                 Event::default().data("serialization error")
             });
         }
 
-        match compress_and_encode(&json_value) {
+        match compress_and_encode(json_value) {
             Ok(compressed_payload) => Event::default()
                 .json_data(&compressed_payload)
                 .unwrap_or_else(|e| {
