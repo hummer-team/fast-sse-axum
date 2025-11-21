@@ -31,13 +31,11 @@ pub mod log_wrapper {
         // 控制台输出层
         let console_layer = fmt::layer()
             .event_format(log_format.clone())
-            .with_writer(std::io::stdout)
-            .with_ansi(true);
+            .with_writer(std::io::stdout);
 
         // 文件输出层
         let file_layer = fmt::layer()
-            .event_format(log_format)
-            .with_ansi(false)
+            .event_format(log_format.clone().with_ansi(false))
             .with_writer(non_blocking);
 
         // 注册并初始化
