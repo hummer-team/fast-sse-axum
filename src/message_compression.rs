@@ -10,7 +10,7 @@ pub mod message_compression {
     use tracing::{debug, warn};
 
     /// Create a compression layer
-    #[warn(dead_code)]
+    #[allow(dead_code)]
     pub fn compression_layer_nosupport_sse() -> Option<CompressionLayer> {
         // read env var SEND_EVENT_TO_CLIENT_COMPRESSION
         let enabled = is_compression_enabled();
@@ -66,8 +66,8 @@ pub mod message_compression {
         let compressed_bytes = encoder.finish()?;
         debug!(
             "compressed {} bytes from {} bytes",
-            data_bytes.len(),
-            compressed_bytes.len()
+            compressed_bytes.len(),
+            data_bytes.len()
         );
         let encoded_data = general_purpose::STANDARD.encode(&compressed_bytes);
 

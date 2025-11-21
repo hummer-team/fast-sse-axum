@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tcp_configuration::create_tcp_listener(addr)?;
     info!("listening on {}", listener.local_addr().unwrap());
     // application
-    let app = sse_service::app();
+    let app = sse_service::init_router()?;
     axum::serve(listener, app).await.unwrap();
     Ok(())
 }

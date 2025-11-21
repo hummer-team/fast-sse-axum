@@ -3,6 +3,7 @@ pub mod sse_service {
     use crate::message_compression::message_compression::process_and_compress_event;
     use crate::message_package::message_package::EventPackage;
     use crate::response_builder::response_builder::ResponseBuilder;
+    use crate::{common::sse_common::sse_common::ResourceResponse, redis_stream::redis_stream};
     use axum::extract::Path;
     use axum::middleware::from_fn_with_state;
     use axum::{
@@ -15,8 +16,12 @@ pub mod sse_service {
         routing::{get, post},
         Json, Router,
     };
+    use base64::{engine::general_purpose, Engine as _};
+    use serde::Deserialize;
+    use serde_json::json;
     // use dashmap::DashMap;
     // use hashbrown::HashMap;
+    use crate::common::sse_common::sse_common::get_env_var;
     use serde_json::Value;
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -32,34 +37,28 @@ pub mod sse_service {
     use tracing::log::{debug, error, info, warn};
 
     /// SSE service enter
-    pub fn app() -> Router {
+    pub fn init_router() -> Result<Router, Box<dyn std::error::Error>> {
         let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
         info!("Serving static files from {}", assets_dir.display());
         let static_files_service = ServeDir::new(assets_dir).append_index_html_on_directories(true);
 
-        let allowed_ids = std::env::var("ALLOWED_EVENT_IDS")
-            .unwrap_or_default()
+        let allowed_ids = get_env_var::<String>("ALLOWED_EVENT_IDS", Some(""))?
+            .split(",")
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+
+        let allowed_events = get_env_var::<String>("ALLOWED_EVENT_TYPES", Some(""))?
             .split(',')
             .filter(|s| !s.is_empty())
             .map(String::from)
             .collect();
 
-        let allowed_events = std::env::var("ALLOWED_EVENT_TYPES")
-            .unwrap_or_default()
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect();
-
-        let secret = std::env::var("HMAC_SECRET")
-            .expect("HMAC_SECRET must be set")
-            .into_bytes();
-
+        let secret = get_env_var::<String>("HMAC_SECRET", None)?.into_bytes();
         let config = Arc::new(AuthConfig::new(allowed_ids, secret, allowed_events));
 
         // build our application with a route
-        let router = Router::new()
-            .fallback_service(static_files_service)
+        let mut router = Router::new()
             .route(
                 "/v1/subscribe/events/{event_id}/types/{event_type}",
                 get(subscribert), // http method is get
@@ -68,10 +67,20 @@ pub mod sse_service {
                 "/v1/sse/events/{event_id}/types/{event_type}",
                 post(send_message_with_web_request), // http method is post
             )
-            .layer(from_fn_with_state(config.into(), auth))
+            .layer(from_fn_with_state(config.into(), auth));
+
+        // only for debug
+        #[cfg(debug_assertions)]
+        {
+            info!("Registering mock test producer event endpoint for debug builds");
+            router = router.route("/v1/sse/events", post(mock_test_producer_event));
+        }
+
+        let router = router
+            .fallback_service(static_files_service)
             .layer(TraceLayer::new_for_http());
         info!("sse router register success");
-        router
+        Ok(router)
     }
 
     struct ChannelMeta {
@@ -90,6 +99,43 @@ pub mod sse_service {
         let _ = CLIENT_SUBSCRIPTIONS.set(Arc::new(RwLock::new(HashMap::new())));
         info!("SSE service subscript initialized");
         tokio::spawn(cleanup_inactive_clients());
+    }
+
+    #[derive(Deserialize)]
+    pub struct MockParams {
+        event_id: String,
+        body_size: usize, // in KB
+    }
+
+    #[cfg(debug_assertions)]
+    pub async fn mock_test_producer_event(Json(params): Json<MockParams>) -> Response {
+        let body_size_bytes = params.body_size * 1024;
+        let large_body: Vec<u8> = vec![0; body_size_bytes];
+        let encoded_body = general_purpose::STANDARD.encode(&large_body);
+
+        // Create an EventPackage with the mock data.
+        let event_package = EventPackage::new(
+            "mock_message".to_string(),
+            params.event_id,
+            "mock_from_user".to_string(),
+            "mock_to_user".to_string(),
+            Some(serde_json::Value::String(encoded_body)),
+            None, // headers
+            Some("mock_event_type".to_string()),
+        );
+        match redis_stream::publish_event(event_package).await {
+            Ok(msg_id) => {
+                info!("Successfully published mock event with ID: {}", msg_id);
+                let response_data = ResourceResponse::ok(Some(json!({ "message_id": msg_id })));
+                (StatusCode::OK, Json(response_data)).into_response()
+            }
+            Err(e) => {
+                error!("Failed to publish mock event: {}", e);
+                let response_data =
+                    ResourceResponse::<serde_json::Value>::error("PUBLISH_ERROR", &e.to_string());
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(response_data)).into_response()
+            }
+        }
     }
 
     /// Subscribe to an event

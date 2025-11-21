@@ -14,24 +14,29 @@ pub mod redis_stream {
     use tracing::{debug, error, info, warn};
 
     // Redis Stream
-    pub const DEFAULT_STREAM_NAME: &str = "sse:events";
-    pub const DEFAULT_GROUP_NAME: &str = "sse_consumers";
-    pub const CONSUMER_NAME_PREFIX: &str = "sse-server";
+    const DEFAULT_STREAM_NAME: &str = "sse:events";
+    const DEFAULT_GROUP_NAME: &str = "sse_consumers";
+    const CONSUMER_NAME_PREFIX: &str = "sse-server";
 
-    pub type RedisPool = Pool<RedisConnectionManager>;
+    type RedisPool = Pool<RedisConnectionManager>;
+    static REDIS_POOL: OnceLock<Pool<RedisConnectionManager>> = OnceLock::new();
 
     /// Initialize redis connection pool
     pub async fn init() -> Result<(), Box<dyn std::error::Error>> {
         // init redis connection pool
-        let redis_cnn = redis_pool::create_redis_pool()
-            .await
-            .expect("Failed to initialize Redis connection pool");
+        let redis_pool = redis_pool::create_redis_pool().await?;
         // ensure consumer group
-        ensure_consumer_group(&redis_cnn).await?;
+        ensure_consumer_group(&redis_pool).await?;
         let shutdown = CancellationToken::new();
         let listener_shutdown = shutdown.clone();
         // start stream listener
-        tokio::spawn(async move { run_stream_listener(redis_cnn, listener_shutdown).await });
+        let pool_for_listener = redis_pool.clone();
+        tokio::spawn(
+            async move { run_stream_listener(pool_for_listener, listener_shutdown).await },
+        );
+        REDIS_POOL
+            .set(redis_pool)
+            .expect("Failed to set Redis pool");
         Ok(())
     }
 
@@ -76,6 +81,29 @@ pub mod redis_stream {
         }
     }
 
+    /// Publish event to redis stream
+    pub async fn publish_event(event: EventPackage) -> RedisResult<String> {
+        // Get the pool from the global static
+        let pool = REDIS_POOL.get().expect("Redis pool not initialized");
+        let mut conn = redis_pool::get_conn(pool).await?;
+        // Serialize the event package
+        let msg_json = serde_json::to_string(&event).map_err(|e| {
+            redis::RedisError::from((
+                redis::ErrorKind::TypeError,
+                "Serialization failed",
+                e.to_string(),
+            ))
+        })?;
+
+        redis::cmd("XADD")
+            .arg(stream_name())
+            .arg("*")
+            .arg(event.event_id)
+            .arg(msg_json)
+            .query_async(&mut *conn)
+            .await
+    }
+
     fn is_busygroup_error(err: &RedisError) -> bool {
         if let Some(code) = err.code() {
             return code == "BUSYGROUP";
@@ -88,8 +116,8 @@ pub mod redis_stream {
         id: &str,
         fields: &std::collections::HashMap<String, redis::Value>,
     ) -> Result<EventPackage, Box<dyn std::error::Error + Send + Sync>> {
-        for (key, value) in fields.iter() {
-            debug!("origin message key: {}, value: {:?}", key, value);
+        for (key, _value) in fields.iter() {
+            debug!("origin message key: {}", key);
         }
         let (_key, value) = fields.iter().next().ok_or("No fields")?;
 
@@ -109,10 +137,7 @@ pub mod redis_stream {
     ) -> RedisResult<()> {
         // let mut conn = redis_pool::get_conn(redis_pool).await?;
         for stream_key in entries {
-            info!(
-                "Processing stream entry: {:?}, stream message {:?}",
-                stream_key.key, stream_key.ids
-            );
+            info!("Processing stream entry: {:?}", stream_key.key);
             if stream_key.key != *stream_name() {
                 continue;
             }
@@ -235,6 +260,7 @@ pub mod redis_stream {
     }
 
     fn stream_name() -> &'static String {
+        // only init once
         static STREAM_NAME: OnceLock<String> = OnceLock::new();
         STREAM_NAME.get_or_init(|| {
             std::env::var("REDIS_STREAM_NAME").unwrap_or_else(|_| DEFAULT_STREAM_NAME.to_string())

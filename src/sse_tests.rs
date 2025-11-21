@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::sse_service::sse_service::app;
+    use crate::sse_service::sse_service::init_router;
     use eventsource_stream::Eventsource;
     use tokio::net::TcpListener;
     use tokio_stream::StreamExt;
@@ -15,7 +15,7 @@ mod tests {
             // Retrieve the port assigned to us by the OS
             let port = listener.local_addr().unwrap().port();
             tokio::spawn(async {
-                axum::serve(listener, app()).await.unwrap();
+                axum::serve(listener, init_router().unwrap()).await.unwrap();
             });
             // Returns address (e.g. http://127.0.0.1{random_port})
             format!("http://{host}:{port}")
@@ -61,5 +61,12 @@ mod tests {
         println!("{:?}", params.len());
         assert_eq!(params.get(3), Some(&"carid000001"));
         assert_eq!(params.get(5), Some(&"cart_changed"));
+    }
+
+    #[test]
+    pub fn string() {
+        let s = "hello world";
+        println!("{}", serde_json::Value::String(s.to_string()));
+        println!("{}", serde_json::json!(s.to_string()));
     }
 }

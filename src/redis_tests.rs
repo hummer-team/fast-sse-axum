@@ -24,7 +24,9 @@ mod redis_tests {
     #[tokio::test]
     pub async fn redis_set_test() {
         init();
-        let pool = redis_pool::create_redis_pool().await;
+        let pool = redis_pool::create_redis_pool()
+            .await
+            .expect("get redis pool failed");
         match redis_pool::get_conn(&pool).await {
             Ok(mut conn) => {
                 let _: () = redis::cmd("SET")
@@ -47,7 +49,9 @@ mod redis_tests {
     #[tokio::test]
     pub async fn send_message_to_stream() {
         init();
-        let pool = redis_pool::create_redis_pool().await;
+        let pool = redis_pool::create_redis_pool()
+            .await
+            .expect("get redis pool failed");
         match redis_pool::get_conn(&pool).await {
             Ok(mut conn) => {
                 let mut map = HashMap::new();
