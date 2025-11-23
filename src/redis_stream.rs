@@ -156,7 +156,7 @@ pub mod redis_stream {
                             );
                         }
                         Err(e) => {
-                            error!("send message error: {:?}", e);
+                            error!("send message {} error: {:?}", msg_id, e);
                             let def = ("NA".to_string(), "NA".to_string());
                             if e.unwrap_or(def).0 == "NO_ACTIVE_SUBSCRIPTION" {
                                 let _: RedisResult<i32> =

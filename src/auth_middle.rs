@@ -51,7 +51,7 @@ pub mod auth_middle {
         if path.eq("/") {
             return Ok(next.run(req).await);
         }
-        
+
         // request path /v1/sse/events/{event_id}/types/{event_type}
         let segments: Vec<&str> = path.split('/').skip(1).collect();
         info!("request path: {}", path);
@@ -64,11 +64,13 @@ pub mod auth_middle {
             return Err(StatusCode::BAD_REQUEST);
         }
 
-        if config.allowed_event_ids.len() > 0
-            && !config.allowed_event_ids.contains(&params.event_id)
-        {
-            error!("Event ID {} not allowed", params.event_id);
-            return Err(StatusCode::FORBIDDEN);
+        if config.allowed_event_ids.len() > 0 {
+            if !config.allowed_event_ids.contains("*")
+                && !config.allowed_event_ids.contains(&params.event_id)
+            {
+                error!("Event ID {} not allowed", params.event_id);
+                return Err(StatusCode::FORBIDDEN);
+            }
         }
 
         if config.allowed_event_types.len() > 0

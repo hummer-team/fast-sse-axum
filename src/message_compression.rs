@@ -27,6 +27,7 @@ pub mod message_compression {
         }
     }
 
+    #[allow(dead_code)]
     /// process and compress an SSE event
     pub fn process_and_compress_event(json_value: &Value) -> Event {
         if !is_compression_enabled() {

@@ -1,4 +1,5 @@
 pub mod sse_common {
+    use chrono::Local;
     use serde::{Deserialize, Serialize};
     use std::env;
     use std::str::FromStr;
@@ -60,5 +61,13 @@ pub mod sse_common {
                 name, value_str
             )
         })
+    }
+
+    pub fn now_time_with_format(format: Option<&str>) -> String {
+        let now = Local::now();
+        match format {
+            Some(format) => now.format(format).to_string(),
+            None => now.format("%Y-%m-%d %H:%M:%S").to_string(),
+        }
     }
 }

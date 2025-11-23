@@ -44,6 +44,7 @@ bb8-redis = "0.24.0"
 socket2 = "0.6.1"
 flate2 = "1.1.5"
 base64 = "0.22.1"
+chrono = "0.4.42"
 # async-compression = "0.4.33"
 # hyper = { version = "1.8.1", features = ["http1", "http2", "server"] }
 # http-body = "1.0.1"

@@ -69,4 +69,12 @@ mod tests {
         println!("{}", serde_json::Value::String(s.to_string()));
         println!("{}", serde_json::json!(s.to_string()));
     }
+
+    #[test]
+    pub fn time() {
+        use chrono::Local;
+        let now = Local::now();
+        let formatted_time = now.format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+        println!("{}", formatted_time);
+    }
 }

@@ -1,9 +1,12 @@
 pub mod sse_service {
     use crate::auth_middle::auth_middle::{auth, AuthConfig};
-    use crate::message_compression::message_compression::process_and_compress_event;
+    use crate::message_compression::message_compression;
     use crate::message_package::message_package::EventPackage;
     use crate::response_builder::response_builder::ResponseBuilder;
-    use crate::{common::sse_common::sse_common::ResourceResponse, redis_stream::redis_stream};
+    use crate::{
+        common::sse_common::sse_common::now_time_with_format,
+        common::sse_common::sse_common::ResourceResponse, redis_stream::redis_stream,
+    };
     use axum::extract::Path;
     use axum::middleware::from_fn_with_state;
     use axum::{
@@ -143,7 +146,7 @@ pub mod sse_service {
         let receiver = {
             let mut subs = CLIENT_SUBSCRIPTIONS.get().unwrap().write().await;
             let meta = subs.entry(event_id.clone()).or_insert_with(|| {
-                let (tx, _rx) = broadcast::channel::<Arc<Value>>(1024);
+                let (tx, _rx) = broadcast::channel::<Arc<Value>>(4096);
                 info!("create channel: {} (type: {})", event_id, event_type);
                 ChannelMeta {
                     sender: tx,
@@ -165,12 +168,15 @@ pub mod sse_service {
                 match rx.recv().await {
                     Ok(json_value) => {
                         // push message to client
-                        // yield Ok::<_, Infallible>(
-                        //     Event::default()
-                        //         .json_data(json_value)
-                        //         .unwrap_or_else(|_| Event::default().data("serialization error"))
-                        // );
-                        let event = process_and_compress_event(&json_value);
+                        // Use `&*json_value` to get &Value from Arc<Value>
+                        let event = Event::default()
+                                    .json_data(&*json_value)
+                                    .unwrap_or_else(|e| {
+                                        warn!("sse event serialization error: {}", e);
+                                        Event::default().data("serialization error")
+                                    });
+                        //old code:
+                        //let event = process_and_compress_event(&json_value);
                         yield Ok::<_, Infallible>(event);
                     }
                     Err(broadcast::error::RecvError::Lagged(count)) => {
@@ -229,18 +235,22 @@ pub mod sse_service {
         let event_name = message.get_event_name();
         let event_type = message.get_event_type();
 
-        match sender.send(Arc::new(message.data.unwrap())) {
+        let payload_to_send = get_payload(message);
+        let start = Instant::now();
+        match sender.send(Arc::new(payload_to_send)) {
             Ok(receivers_count) => {
+                let duration = start.elapsed().as_millis();
                 info!(
-                    "event_id = {},event_type = {},receivers = {},Broadcast successful",
-                    event_id, event_name, receivers_count
+                    "event_id: {},event_type: {},receivers: {},duration:{} ms,Broadcast successful",
+                    event_id, event_name, receivers_count, duration,
                 );
                 Result::Ok(true)
             }
-            Err(broadcast::error::SendError(dropped)) => {
+            Err(broadcast::error::SendError(_dropped)) => {
+                let duration = start.elapsed().as_millis();
                 error!(
-                    "event_id = {},event_type = {},Broadcast queue full {}",
-                    event_id, event_type, dropped
+                    "event_id: {},event_type: {},duration: {} ms,Broadcast queue full",
+                    event_id, event_type, duration
                 );
                 let msg = (
                     "SEND_FAIL".to_string(),
@@ -325,6 +335,29 @@ pub mod sse_service {
                 info!("Cleaned up {} inactive channels", removed_count);
             } else {
                 info!("No inactive channels to clean");
+            }
+        }
+    }
+
+    /// Get the payload for an event, if enable compression then return compressioned payload
+    fn get_payload(message: EventPackage) -> Value {
+        let mut headers: HashMap<String, String> = message.headers.unwrap_or_default();
+        headers.insert("send_time".to_string(), now_time_with_format(None));
+
+        let uncompressed_payload = json!({
+            "data": message.data,
+            "headers": headers
+        });
+
+        if !message_compression::is_compression_enabled() {
+            return uncompressed_payload;
+        }
+
+        match message_compression::compress_and_encode(&uncompressed_payload) {
+            Ok(compressed_payload) => compressed_payload,
+            Err(e) => {
+                warn!("Payload compression failed: {}. Sending uncompressed.", e);
+                uncompressed_payload
             }
         }
     }
