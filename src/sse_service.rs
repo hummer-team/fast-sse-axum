@@ -249,11 +249,11 @@ pub mod sse_service {
             Err(broadcast::error::SendError(_dropped)) => {
                 let duration = start.elapsed().as_millis();
                 error!(
-                    "event_id: {},event_type: {},duration: {} ms,Broadcast queue full",
+                    "event_id: {},event_type: {},duration: {} ms,no active receivers",
                     event_id, event_type, duration
                 );
                 let msg = (
-                    "SEND_FAIL".to_string(),
+                    "NO_ACTIVE_SUBSCRIPTION".to_string(),
                     "No active SSE subscription; messages discarded.".to_string(),
                 );
                 Result::Err(Some(msg))
