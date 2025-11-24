@@ -24,3 +24,4 @@ logs/
 .vscode/
 .env
 _.md
+assets/sse_test.js
