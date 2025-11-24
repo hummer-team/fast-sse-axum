@@ -25,7 +25,6 @@ pub mod sse_service {
     // use dashmap::DashMap;
     // use hashbrown::HashMap;
     use crate::common::sse_common::sse_common::get_env_var;
-    use serde_json::Value;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::{collections::HashMap, sync::OnceLock};
@@ -87,7 +86,7 @@ pub mod sse_service {
     }
 
     struct ChannelMeta {
-        sender: broadcast::Sender<Arc<Value>>,
+        sender: broadcast::Sender<Arc<String>>,
         last_activity: Mutex<Instant>,
     }
 
@@ -97,6 +96,9 @@ pub mod sse_service {
 
     const CLEANUP_INTERVAL: Duration = Duration::from_secs(45);
     const CHANNEL_TTL: Duration = Duration::from_secs(120);
+    const MAX_RETRIES: u32 = 1;
+    const RETRY_DELAY: Duration = Duration::from_secs(2);
+
     /// init
     pub async fn init() {
         let _ = CLIENT_SUBSCRIPTIONS.set(Arc::new(RwLock::new(HashMap::new())));
@@ -146,7 +148,7 @@ pub mod sse_service {
         let receiver = {
             let mut subs = CLIENT_SUBSCRIPTIONS.get().unwrap().write().await;
             let meta = subs.entry(event_id.clone()).or_insert_with(|| {
-                let (tx, _rx) = broadcast::channel::<Arc<Value>>(4096);
+                let (tx, _rx) = broadcast::channel::<Arc<String>>(4096);
                 info!("create channel: {} (type: {})", event_id, event_type);
                 ChannelMeta {
                     sender: tx,
@@ -167,16 +169,17 @@ pub mod sse_service {
             loop {
                 match rx.recv().await {
                     Ok(json_value) => {
-                        // push message to client
-                        // Use `&*json_value` to get &Value from Arc<Value>
-                        let event = Event::default()
-                                    .json_data(&*json_value)
-                                    .unwrap_or_else(|e| {
-                                        warn!("sse event serialization error: {}", e);
-                                        Event::default().data("serialization error")
-                                    });
+                        //push message to client
+                        //Use `&*json_value` to get &Value from Arc<Value>
+                        //let event = Event::default()
+                        //            .json_data(&*json_value)
+                        //            .unwrap_or_else(|e| {
+                        //                warn!("sse event serialization error: {}", e);
+                        //                Event::default().data("serialization error")
+                        //            });
                         //old code:
                         //let event = process_and_compress_event(&json_value);
+                        let event = Event::default().data(&*json_value);
                         yield Ok::<_, Infallible>(event);
                     }
                     Err(broadcast::error::RecvError::Lagged(count)) => {
@@ -206,59 +209,69 @@ pub mod sse_service {
             .into_response()
     }
 
+    /// Send a message to client,if send fail retry
     pub async fn send_message(message: EventPackage) -> Result<bool, Option<(String, String)>> {
-        let sse_sender = {
-            let subs = CLIENT_SUBSCRIPTIONS.get().unwrap().read().await;
-            if let Some(meta) = subs.get(&message.get_event_id()) {
-                // * 表示解引用
-                *meta.last_activity.lock().unwrap() = Instant::now();
-                Some(meta.sender.clone())
-            } else {
-                None
-            }
-        }; // free the lock
-
-        let Some(sender) = sse_sender else {
-            warn!(
-                "event_id = {},event_type = {},No active SSE subscription; messages discarded.",
-                message.get_event_id(),
-                message.event_name
-            );
-            let msg = (
-                "NO_ACTIVE_SUBSCRIPTION".to_string(),
-                "No active SSE subscription; messages discarded.".to_string(),
-            );
-            return Result::Err(Some(msg));
-        };
-
-        let event_id = message.get_event_id();
-        let event_name = message.get_event_name();
-        let event_type = message.get_event_type();
-
-        let payload_to_send = get_payload(message);
         let start = Instant::now();
-        match sender.send(Arc::new(payload_to_send)) {
-            Ok(receivers_count) => {
-                let duration = start.elapsed().as_millis();
-                info!(
-                    "event_id: {},event_type: {},receivers: {},duration:{} ms,Broadcast successful",
-                    event_id, event_name, receivers_count, duration,
-                );
-                Result::Ok(true)
-            }
-            Err(broadcast::error::SendError(_dropped)) => {
-                let duration = start.elapsed().as_millis();
-                error!(
-                    "event_id: {},event_type: {},duration: {} ms,no active receivers",
-                    event_id, event_type, duration
-                );
-                let msg = (
-                    "NO_ACTIVE_SUBSCRIPTION".to_string(),
-                    "No active SSE subscription; messages discarded.".to_string(),
-                );
-                Result::Err(Some(msg))
+        let payload_to_send = get_payload(&message);
+        let payload_arc = Arc::new(payload_to_send);
+        for attempt in 0..=MAX_RETRIES {
+            let sse_sender = {
+                let subs = CLIENT_SUBSCRIPTIONS.get().unwrap().read().await;
+                if let Some(meta) = subs.get(&message.get_event_id()) {
+                    // * 表示解引用
+                    *meta.last_activity.lock().unwrap() = Instant::now();
+                    Some(meta.sender.clone())
+                } else {
+                    None
+                }
+            }; // free the lock
+
+            if let Some(sender) = sse_sender {
+                let event_id = message.get_event_id();
+                let event_name = message.get_event_name();
+                let event_type = message.get_event_type();
+
+                let send_start = Instant::now();
+                match sender.send(payload_arc.clone()) {
+                    Ok(receivers_count) => {
+                        let duration = send_start.elapsed().as_millis();
+                        info!("event_id: {},event_type: {},receivers: {},duration:{} ms,Broadcast successful"
+                        , event_id, event_name, receivers_count, duration);
+                        return Result::Ok(true);
+                    }
+                    Err(broadcast::error::SendError(_dropped)) => {
+                        let duration = start.elapsed().as_millis();
+                        error!(
+                            "event_id: {},event_type: {},duration: {} ms,no active receivers",
+                            event_id, event_type, duration
+                        );
+                    }
+                };
+            } else {
+                if attempt < MAX_RETRIES {
+                    warn!("No active subscription for event_id: {}, attempt {}/{}. Retrying in {:?}...",
+                            message.get_event_id(),
+                            attempt + 1,
+                            MAX_RETRIES + 1,
+                            RETRY_DELAY);
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
             }
         }
+        warn!(
+            "event_id: {},event_type: {},send message done, cost time: {} ms",
+            message.get_event_id(),
+            message.event_name,
+            start.elapsed().as_millis()
+        );
+        let msg = (
+            "NO_ACTIVE_SUBSCRIPT_RETRY_SEND_FAIL".to_string(),
+            format!(
+                "no active SSE subscription retry {} send message fail.",
+                MAX_RETRIES
+            ),
+        );
+        Err(Some(msg))
     }
 
     pub async fn send_message_with_web_request(
@@ -310,8 +323,8 @@ pub mod sse_service {
                 r.iter()
                     .filter_map(|(id, meta)| {
                         let last_activity = *meta.last_activity.lock().unwrap();
-                        // channel no message or ttl timeout
-                        if meta.sender.receiver_count() == 0 || now - last_activity > CHANNEL_TTL {
+                        // channel no message and ttl timeout
+                        if meta.sender.receiver_count() == 0 && now - last_activity > CHANNEL_TTL {
                             Some(id.clone())
                         } else {
                             None
@@ -340,25 +353,31 @@ pub mod sse_service {
     }
 
     /// Get the payload for an event, if enable compression then return compressioned payload
-    fn get_payload(message: EventPackage) -> Value {
-        let mut headers: HashMap<String, String> = message.headers.unwrap_or_default();
+    fn get_payload(message: &EventPackage) -> String {
+        let mut headers: HashMap<String, String> = message.headers.clone().unwrap_or_default();
         headers.insert("send_time".to_string(), now_time_with_format(None));
 
         let uncompressed_payload = json!({
-            "data": message.data,
+            "data": message.data.clone(),
             "headers": headers
         });
 
-        if !message_compression::is_compression_enabled() {
-            return uncompressed_payload;
-        }
-
-        match message_compression::compress_and_encode(&uncompressed_payload) {
-            Ok(compressed_payload) => compressed_payload,
-            Err(e) => {
-                warn!("Payload compression failed: {}. Sending uncompressed.", e);
-                uncompressed_payload
+        let final_payload = if message_compression::is_compression_enabled() {
+            match message_compression::compress_and_encode(&uncompressed_payload) {
+                Ok(compressed_payload) => compressed_payload,
+                Err(e) => {
+                    warn!("Payload compression failed: {}. Sending uncompressed.", e);
+                    uncompressed_payload
+                }
             }
-        }
+        } else {
+            uncompressed_payload
+        };
+
+        serde_json::to_string(&final_payload).unwrap_or_else(|e| {
+            error!("Failed to serialize final payload: {}", e);
+            // Fallback to a simple error JSON string
+            r#"{"error":"payload serialization failed"}"#.to_string()
+        })
     }
 }

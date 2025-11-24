@@ -9,14 +9,13 @@ import { Trend, Counter, Rate } from 'k6/metrics';
 import { SharedArray } from 'k6/data';
 import { textSummary } from 'https://jslib.k6.io/k6-utils/1.4.0/index.js';
 
-
 // run shell 
 // ./k6 run sse_test.js
 // ./k6 run -e SCENARIO=producer sse_test.js    
 // ./k6 run -e SCENARIO=consumers sse_test.js
 // --- config ---
 const BASE_URL = 'http://127.0.0.1:30000';
-const HMAC_SECRET = process.env.STRIPE_KEY || "NA";
+const HMAC_SECRET = __ENV.HMAC_SECRET || "NA";
 const EVENT_TYPE = 'cart_changed';
 const MAX_CONSUMER_VUS = 50;
 // 
@@ -45,7 +44,8 @@ let scenarios = {
             { duration: '15s', target: 20 },
             // vus add count 20~50
             { duration: '1m', target: MAX_CONSUMER_VUS },
-            { duration: '2m', target: 0 },
+            { duration: '2m', target: MAX_CONSUMER_VUS },
+            { duration: '30s', target: 0 },
         ],
     },
     // 场景2: 生产者，调用API发送消息
@@ -62,9 +62,9 @@ let scenarios = {
         // use shared-iterations then use: maxDuration and iterations
         // maxDuration: '4m',
         // iterations: 10,
-        "duration": '3m30s',
+        "duration": '1m15s',
         // 延迟10秒启动，让消费者先建立连接
-        startTime: '5s',
+        startTime: '45s',
     },
 };
 // 根据环境变量 SCENARIO 动态选择要运行的场景
@@ -143,6 +143,11 @@ export function consumers() {
             receivedMessageCount.add(1);
             // event.data 是一个字符串，其 .length 属性可以近似作为其字节大小
             receivedMessageSize.add(event.data.length);
+            // sse send keep-alive message
+            if (!event.data || event.data.trim() === '') {
+                // console.log(`VU ${__VU}: Received an empty event, ignoring.`);
+                return;
+            }
             // 当收到消息时
             // console.log(`VU ${__VU}: Received event: id=${event.id}, event=${event.event}, data=${event.data}`);
             let payload;
@@ -162,23 +167,20 @@ export function consumers() {
             const receivedTime = new Date().getTime();
             // 检查报文中是否有 encoding 字段
             if (payload.encoding) {
-                // 这是压缩报文，本次不计算延迟
-                // console.log(`VU ${__VU}: Received a compressed message.`);
-            } else {
-                // 这是未压缩报文，计算延迟
-                if (payload.headers && payload.headers.send_time) {
-                    const sendTimeStr = payload.headers.send_time;
-                    // JS Date可以直接解析 "YYYY-MM-dd HH:mm:ss.sss" 格式
-                    const sendTime = new Date(sendTimeStr).getTime();
-
-                    if (!isNaN(sendTime)) {
-                        const latency = receivedTime - sendTime;
-                        // 将延迟添加到自定义指标中
-                        messageLatency.add(latency);
-                    } else {
-                        console.error(`VU ${__VU}: Could not parse send_time: '${sendTimeStr}'`);
+                if (payload.encoding === 'base64+gzip' && payload.data) {
+                    try {
+                        const decodedData = encoding.b64decode(payload.data, 'std', 's');
+                        const decompressedData = crypto.gzip(decodedData, 'decompress');
+                        const decompressedPayloadStr = String.fromCharCode.apply(null, new Uint8Array(decompressedData));
+                        payload = JSON.parse(decompressedPayloadStr);
+                        latency(payload, receivedTime);
+                    } catch (e) {
+                        console.error(`VU ${__VU}: Failed to decompress message: ${e}`);
+                        return;
                     }
                 }
+            } else {
+                latency(payload, receivedTime);
             }
 
             // 可以添加检查来验证消息内容
@@ -208,6 +210,26 @@ export function consumers() {
     if (res.status !== 200) {
         console.error(`VU ${__VU}: Could not connect to SSE endpoint. Status: ${res.status}, Body: ${res.body}`);
         sleep(1);
+    }
+
+    function latency(payload, receivedTime) {
+        if (payload.headers && payload.headers.send_time) {
+            const sendTimeStr = payload.headers.send_time;
+            // JS Date可以直接解析 "YYYY-MM-dd HH:mm:ss.sss" 格式
+            const sendTime = new Date(sendTimeStr).getTime();
+            const receivedTime_str = new Date(receivedTime).toISOString().replace('T', ' ').slice(0, -1);
+            const sendTime_str = new Date(sendTime).toISOString().replace('T', ' ').slice(0, -1);
+
+
+            if (!isNaN(sendTime)) {
+                const latency = receivedTime - sendTime;
+                console.log(`VU ${__VU}: Received message ${payload} with ${receivedTime_str} - ${sendTime_str} = latency: ${latency} ms`);
+                // 将延迟添加到自定义指标中
+                messageLatency.add(latency);
+            } else {
+                console.error(`VU ${__VU}: Could not parse send_time: '${sendTimeStr}'`);
+            }
+        }
     }
 }
 
@@ -254,14 +276,14 @@ export function producers() {
 export function handleSummary(data) {
     const producedCount = data.metrics.produced_message_count?.values?.count || 0;
     const receivedCount = data.metrics.received_message_count?.values?.count || 0;
-
+    console.log(`handleSummary Produced ${producedCount} messages, received ${receivedCount} messages.`);
     const lostMessages = producedCount - receivedCount;
     let lossRate = 0;
     if (producedCount > 0) {
         lossRate = lostMessages / producedCount;
     }
 
-    const lossPercentage = (lossRate * 100).toFixed(2);
+    const lossPercentage = (lossRate * 100).toFixed(2) + "%";
 
     const customReport = `
     ================================================================
@@ -270,12 +292,11 @@ export function handleSummary(data) {
       Messages Produced : ${producedCount}
       Messages Received : ${receivedCount}
       Messages Lost     : ${lostMessages}
-      Message Loss Rate : ${lossPercentage}%
+      Message Loss Rate : ${lossPercentage}
     ================================================================
     `;
-
+    console.log(`handleSummary Message Loss Rate: ${customReport}`);
     return {
-        'stdout': textSummary(data, { indent: ' ', enableColors: true }) + customReport,
-        //'summary.json': JSON.stringify(data), // (可选) 将完整的原始数据保存到文件
+        'stdout': textSummary(data, { indent: ' ', enableColors: true })
     };
 }

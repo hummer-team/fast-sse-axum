@@ -1,6 +1,6 @@
-# sse base on axum
+# Sse base on axum
 
-# load test report
+# Base test report
 #### █ THRESHOLDS 
 
     http_req_duration{scenario:producers}

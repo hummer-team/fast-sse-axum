@@ -11,7 +11,7 @@ pub mod redis_stream {
     use std::sync::OnceLock;
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
-    use tracing::{debug, error, info, warn};
+    use tracing::{debug, error, info};
 
     // Redis Stream
     const DEFAULT_STREAM_NAME: &str = "sse:events";
@@ -116,9 +116,6 @@ pub mod redis_stream {
         id: &str,
         fields: &std::collections::HashMap<String, redis::Value>,
     ) -> Result<EventPackage, Box<dyn std::error::Error + Send + Sync>> {
-        for (key, _value) in fields.iter() {
-            debug!("origin message key: {}", key);
-        }
         let (_key, value) = fields.iter().next().ok_or("No fields")?;
 
         let bytes = match value {
@@ -135,9 +132,8 @@ pub mod redis_stream {
         conn: &mut PooledConnection<'_, RedisConnectionManager>,
         entries: &[redis::streams::StreamKey],
     ) -> RedisResult<()> {
-        // let mut conn = redis_pool::get_conn(redis_pool).await?;
         for stream_key in entries {
-            info!("Processing stream entry: {:?}", stream_key.key);
+            debug!("processing stream entry: {:?}", stream_key.key);
             if stream_key.key != *stream_name() {
                 continue;
             }
@@ -147,7 +143,8 @@ pub mod redis_stream {
                 match parse_stream_message(msg_id, &stream_id.map) {
                     // send message
                     Ok(msg) => match sse_service::send_message(msg).await {
-                        Ok(..) => {
+                        Ok(_) => {
+                            //send message success ack message
                             let _: RedisResult<i32> =
                                 conn.xack(stream_name(), group_name(), &[msg_id]).await;
                             info!(
@@ -156,16 +153,9 @@ pub mod redis_stream {
                             );
                         }
                         Err(e) => {
-                            error!("send message {} error: {:?}", msg_id, e);
-                            let def = ("NA".to_string(), "NA".to_string());
-                            if e.unwrap_or(def).0 == "NO_ACTIVE_SUBSCRIPTION" {
-                                let _: RedisResult<i32> =
-                                    conn.xack(stream_name(), group_name(), &[msg_id]).await;
-                                warn!(
-                                    "no active subscription, ack message success msg id :{}",
-                                    msg_id
-                                );
-                            }
+                            let _: RedisResult<i32> =
+                                conn.xack(stream_name(), group_name(), &[msg_id]).await;
+                            error!("retry failed {} for msg {}. Discarding and ACKing message to prevent blocking.", e.unwrap_or_default().0, msg_id);
                         }
                     },
                     // :? debug format print log
@@ -246,7 +236,7 @@ pub mod redis_stream {
         let opts = redis::streams::StreamReadOptions::default()
             .group(group_name(), consumer_name)
             .count(10)
-            .block(1000);
+            .block(200);
         let stream_id = if read_pending {
             // "0" reads all pending messages for this consumer that were not acknowledged.
             "0"

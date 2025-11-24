@@ -17,7 +17,7 @@ pub mod log_wrapper {
         )
         .unwrap_or(time::UtcOffset::UTC);
 
-        // 统一的日志格式配置
+        // Uniform log format configuration
         let log_format = fmt::format::Format::default()
             .compact()
             .with_timer(fmt::time::OffsetTime::new(local_offset, time_format))
@@ -28,20 +28,20 @@ pub mod log_wrapper {
             .with_file(false)
             .with_line_number(false);
 
-        // 控制台输出层
+        // Console output layer
         let console_layer = fmt::layer()
             .event_format(log_format.clone())
             .with_writer(std::io::stdout);
 
-        // 文件输出层
+        // File output layer
         let file_layer = fmt::layer()
             .event_format(log_format.clone().with_ansi(false))
             .with_writer(non_blocking);
 
-        // 注册并初始化
+        // Register and initialize
         tracing_subscriber::registry()
-            .with(console_layer)
             .with(file_layer)
+            .with(console_layer)
             .init();
 
         guard
