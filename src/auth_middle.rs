@@ -73,11 +73,13 @@ pub mod auth_middle {
             }
         }
 
-        if config.allowed_event_types.len() > 0
-            && !config.allowed_event_types.contains(&params.event_type)
-        {
-            error!("Event type {} not allowed", params.event_type);
-            return Err(StatusCode::FORBIDDEN);
+        if config.allowed_event_types.len() > 0 {
+            if !config.allowed_event_types.contains("*")
+                && !config.allowed_event_types.contains(&params.event_type)
+            {
+                error!("Event type {} not allowed", params.event_type);
+                return Err(StatusCode::FORBIDDEN);
+            }
         }
 
         let signature = req
