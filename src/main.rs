@@ -1,7 +1,7 @@
-use example_sse::log_wrapper::log_wrapper::init;
-use example_sse::redis_stream::redis_stream;
-use example_sse::sse_service::sse_service;
-use example_sse::tcp_configuration::tcp_configuration;
+use fast_sse::log_wrapper::log_wrapper::init;
+use fast_sse::redis_stream::redis_stream;
+use fast_sse::sse_service::sse_service;
+use fast_sse::tcp_configuration::tcp_configuration;
 use std::net::SocketAddr;
 use tracing::log::info;
 

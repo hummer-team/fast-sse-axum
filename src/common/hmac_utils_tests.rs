@@ -26,12 +26,10 @@ mod hmac_utils_tests {
         // let secret = b"my_test_secret_key_32bytes_long!";
         let payload = "carid000001:cart_changed";
 
-        // 创建签名
         let signature = create_sign(&secret, payload);
         // f8940179393d3be15724696499ba278eabd56874456b09349591640c41c6c35f
         println!("Generated signature: {}", signature);
 
-        // 验证通过
         assert!(verify_sign(&secret, payload, &signature));
     }
 }

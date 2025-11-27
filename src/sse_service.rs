@@ -1,25 +1,25 @@
 pub mod sse_service {
-    use crate::auth_middle::auth_middle::{auth, AuthConfig};
+    use crate::auth_middle::auth_middle::{AuthConfig, auth};
     use crate::message_compression::message_compression;
     use crate::message_package::message_package::EventPackage;
     use crate::response_builder::response_builder::ResponseBuilder;
     use crate::{
-        common::sse_common::sse_common::now_time_with_format,
-        common::sse_common::sse_common::ResourceResponse, redis_stream::redis_stream,
+        common::sse_common::sse_common::ResourceResponse,
+        common::sse_common::sse_common::now_time_with_format, redis_stream::redis_stream,
     };
     use axum::extract::Path;
     use axum::middleware::from_fn_with_state;
     use axum::{
+        Json, Router,
         body::Body,
         http::StatusCode,
         response::{
-            sse::{Event, KeepAlive, Sse},
             IntoResponse, Response,
+            sse::{Event, KeepAlive, Sse},
         },
         routing::{get, post},
-        Json, Router,
     };
-    use base64::{engine::general_purpose, Engine as _};
+    use base64::{Engine as _, engine::general_purpose};
     use serde::Deserialize;
     use serde_json::json;
     // use dashmap::DashMap;
@@ -33,8 +33,8 @@ pub mod sse_service {
         path::PathBuf,
         time::{Duration, Instant},
     };
-    use tokio::sync::broadcast;
     use tokio::sync::RwLock;
+    use tokio::sync::broadcast;
     use tower_http::{services::ServeDir, trace::TraceLayer};
     use tracing::log::{debug, error, info, warn};
 
@@ -60,7 +60,7 @@ pub mod sse_service {
         let config = Arc::new(AuthConfig::new(allowed_ids, secret, allowed_events));
 
         // build our application with a route
-        let mut router = Router::new()
+        let router = Router::new()
             .route(
                 "/v1/subscribe/events/{event_id}/types/{event_type}",
                 get(subscribert), // http method is get
@@ -72,15 +72,14 @@ pub mod sse_service {
             .layer(from_fn_with_state(config.into(), auth));
 
         // only for debug
-        #[cfg(debug_assertions)]
-        {
+        let router = if cfg!(debug_assertions) {
             info!("Registering mock test producer event endpoint for debug builds");
-            router = router.route("/v1/sse/events", post(mock_test_producer_event));
+            router.route("/v1/sse/events", post(mock_test_producer_event))
+        } else {
+            router
         }
-
-        let router = router
-            .fallback_service(static_files_service)
-            .layer(TraceLayer::new_for_http());
+        .fallback_service(static_files_service)
+        .layer(TraceLayer::new_for_http());
         info!("sse router register success");
         Ok(router)
     }
@@ -107,6 +106,7 @@ pub mod sse_service {
     }
 
     #[derive(Deserialize)]
+    #[cfg(debug_assertions)]
     pub struct MockParams {
         event_id: String,
         body_size: usize, // in KB
@@ -235,8 +235,10 @@ pub mod sse_service {
                 match sender.send(payload_arc.clone()) {
                     Ok(receivers_count) => {
                         let duration = send_start.elapsed().as_millis();
-                        info!("event_id: {},event_type: {},receivers: {},duration:{} ms,Broadcast successful"
-                        , event_id, event_name, receivers_count, duration);
+                        info!(
+                            "event_id: {},event_type: {},receivers: {},duration:{} ms,Broadcast successful",
+                            event_id, event_name, receivers_count, duration
+                        );
                         return Result::Ok(true);
                     }
                     Err(broadcast::error::SendError(_dropped)) => {
@@ -249,11 +251,13 @@ pub mod sse_service {
                 };
             } else {
                 if attempt < MAX_RETRIES {
-                    warn!("No active subscription for event_id: {}, attempt {}/{}. Retrying in {:?}...",
-                            message.get_event_id(),
-                            attempt + 1,
-                            MAX_RETRIES + 1,
-                            RETRY_DELAY);
+                    warn!(
+                        "No active subscription for event_id: {}, attempt {}/{}. Retrying in {:?}...",
+                        message.get_event_id(),
+                        attempt + 1,
+                        MAX_RETRIES + 1,
+                        RETRY_DELAY
+                    );
                     tokio::time::sleep(RETRY_DELAY).await;
                 }
             }

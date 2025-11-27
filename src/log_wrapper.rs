@@ -1,7 +1,8 @@
 pub mod log_wrapper {
+    use crate::common::sse_common::sse_common::get_env_var;
     use time::macros::format_description;
     use tracing_appender::rolling;
-    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     /// Initialize log
     pub fn init() -> tracing_appender::non_blocking::WorkerGuard {
@@ -29,17 +30,26 @@ pub mod log_wrapper {
             .with_line_number(false);
 
         // Console output layer
-        let console_layer = fmt::layer()
-            .event_format(log_format.clone())
-            .with_writer(std::io::stdout);
-
+        let console_layer = if cfg!(debug_assertions) {
+            Some(
+                fmt::layer()
+                    .event_format(log_format.clone())
+                    .with_writer(std::io::stdout),
+            )
+        } else {
+            None
+        };
         // File output layer
         let file_layer = fmt::layer()
             .event_format(log_format.clone().with_ansi(false))
             .with_writer(non_blocking);
 
+        let log_level = get_env_var::<String>("LOG_LEVEL", Some("info")).unwrap();
+        let env_filter = EnvFilter::new(log_level);
+
         // Register and initialize
         tracing_subscriber::registry()
+            .with(env_filter)
             .with(file_layer)
             .with(console_layer)
             .init();

@@ -5,6 +5,8 @@ import { check, sleep } from 'k6';
 import sse from 'k6/x/sse'
 import crypto from 'k6/crypto';
 import encoding from 'k6/encoding';
+// fail
+//import { ungzip } from 'k6/compress/gzip';
 import { Trend, Counter, Rate } from 'k6/metrics';
 import { SharedArray } from 'k6/data';
 import { textSummary } from 'https://jslib.k6.io/k6-utils/1.4.0/index.js';
@@ -43,8 +45,8 @@ let scenarios = {
         stages: [
             { duration: '15s', target: 20 },
             // vus add count 20~50
-            { duration: '1m', target: MAX_CONSUMER_VUS },
-            { duration: '2m', target: MAX_CONSUMER_VUS },
+            { duration: '45s', target: MAX_CONSUMER_VUS },
+            { duration: '45s', target: MAX_CONSUMER_VUS },
             { duration: '30s', target: 0 },
         ],
     },
@@ -64,7 +66,7 @@ let scenarios = {
         // iterations: 10,
         "duration": '1m15s',
         // 延迟10秒启动，让消费者先建立连接
-        startTime: '45s',
+        startTime: '30s',
     },
 };
 // 根据环境变量 SCENARIO 动态选择要运行的场景
@@ -139,10 +141,10 @@ export function consumers() {
                 console.error(`VU ${__VU}: SSE Error: ${event.error}`);
                 return;
             }
-            // 更新消息数量和大小的指标
-            receivedMessageCount.add(1);
-            // event.data 是一个字符串，其 .length 属性可以近似作为其字节大小
-            receivedMessageSize.add(event.data.length);
+            if (event.event === 'message') {
+                receivedMessageCount.add(1);
+                receivedMessageSize.add(event.data.length);
+            }
             // sse send keep-alive message
             if (!event.data || event.data.trim() === '') {
                 // console.log(`VU ${__VU}: Received an empty event, ignoring.`);
@@ -168,16 +170,17 @@ export function consumers() {
             // 检查报文中是否有 encoding 字段
             if (payload.encoding) {
                 if (payload.encoding === 'base64+gzip' && payload.data) {
-                    try {
-                        const decodedData = encoding.b64decode(payload.data, 'std', 's');
-                        const decompressedData = crypto.gzip(decodedData, 'decompress');
-                        const decompressedPayloadStr = String.fromCharCode.apply(null, new Uint8Array(decompressedData));
-                        payload = JSON.parse(decompressedPayloadStr);
-                        latency(payload, receivedTime);
-                    } catch (e) {
-                        console.error(`VU ${__VU}: Failed to decompress message: ${e}`);
-                        return;
-                    }
+                    // not supported
+                    // try {
+                    //     const decodedData = encoding.b64decode(payload.data, 'std');
+                    //     const decompressedData = ungzip(decodedData);
+                    //     const decompressedPayloadStr = String.fromCharCode.apply(null, new Uint8Array(decompressedData));
+                    //     payload = JSON.parse(decompressedPayloadStr);
+                    //     latency(payload, receivedTime);
+                    // } catch (e) {
+                    //     console.error(`VU ${__VU}: Failed to decompress message: ${e}`);
+                    //     return;
+                    // }
                 }
             } else {
                 latency(payload, receivedTime);
@@ -215,10 +218,10 @@ export function consumers() {
     function latency(payload, receivedTime) {
         if (payload.headers && payload.headers.send_time) {
             const sendTimeStr = payload.headers.send_time;
-            // JS Date可以直接解析 "YYYY-MM-dd HH:mm:ss.sss" 格式
             const sendTime = new Date(sendTimeStr).getTime();
-            const receivedTime_str = new Date(receivedTime).toISOString().replace('T', ' ').slice(0, -1);
-            const sendTime_str = new Date(sendTime).toISOString().replace('T', ' ').slice(0, -1);
+            const beijingOffset = 8 * 60 * 60 * 1000;
+            const receivedTime_str = new Date(receivedTime + beijingOffset).toISOString().replace('T', ' ').slice(0, -1);
+            const sendTime_str = new Date(sendTime + beijingOffset).toISOString().replace('T', ' ').slice(0, -1);
 
 
             if (!isNaN(sendTime)) {

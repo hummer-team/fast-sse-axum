@@ -427,7 +427,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sse"
+name = "fast-sse"
 version = "0.1.0"
 dependencies = [
  "async-stream",

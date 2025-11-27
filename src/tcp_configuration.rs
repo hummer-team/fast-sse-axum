@@ -8,9 +8,7 @@ pub mod tcp_configuration {
     pub fn create_tcp_listener(addr: SocketAddr) -> std::io::Result<TcpListener> {
         let socket = Socket::new(Domain::for_address(addr), Type::STREAM, None)?;
         socket.set_reuse_address(true)?;
-        // 降低延迟
         socket.set_tcp_nodelay(true)?;
-        // 关闭时立即释放端口
         socket.set_linger(Some(Duration::from_secs(0)))?;
         #[cfg(target_os = "linux")]
         socket.set_tcp_fastopen(true)?;

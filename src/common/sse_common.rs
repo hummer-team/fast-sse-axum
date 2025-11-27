@@ -67,7 +67,7 @@ pub mod sse_common {
         let now = Local::now();
         match format {
             Some(format) => now.format(format).to_string(),
-            None => now.format("%Y-%m-%d %H:%M:%S").to_string(),
+            None => now.format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
         }
     }
 }

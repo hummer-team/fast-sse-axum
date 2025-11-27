@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod sse_common_tests {
-    use crate::common::sse_common::sse_common::ResourceResponse;
+    use crate::common::sse_common::sse_common::{now_time_with_format, ResourceResponse};
 
     #[test]
     pub fn test_resource() {
@@ -9,5 +9,11 @@ mod sse_common_tests {
 
         response = ResourceResponse::bad_request("test");
         assert_eq!(response.code, "bad_request");
+    }
+
+    #[test]
+    pub fn test_time_format() {
+        let time = now_time_with_format(None);
+        println!("{}", time);
     }
 }
