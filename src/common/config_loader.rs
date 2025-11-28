@@ -20,7 +20,10 @@ pub mod config_loader {
             })?
         };
         let config_filename = format!("app.{}.toml", env);
-        let config_path = PathBuf::from("config").join(&config_filename);
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let mut config_path = PathBuf::from(manifest_dir);
+        config_path.push("config");
+        config_path.push(&config_filename);
 
         info!(
             "Attempting to load configuration for ENV='{}' from '{}'",
@@ -78,7 +81,7 @@ pub mod config_loader {
 
     /// Recursively flattens the TOML value and sets environment variables.
     /// e.g., `[redis.pool]` with `max_size = 10` becomes `REDIS_POOL_MAX_SIZE=10`.
-    pub fn flatten_and_set_vars(
+    pub(crate) fn flatten_and_set_vars(
         config: &HashMap<String, Value>,
         prefix: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
