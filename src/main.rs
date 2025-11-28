@@ -1,3 +1,4 @@
+use fast_sse::common::config_loader;
 use fast_sse::log_wrapper::log_wrapper::init;
 use fast_sse::redis_stream::redis_stream;
 use fast_sse::sse_service::sse_service;
@@ -7,8 +8,8 @@ use tracing::log::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(debug_assertions)]
-    dotenvy::dotenv().ok();
+    // load config
+    config_loader::config_loader::load_config()?;
     // Initialize logger
     let _guard = init();
     // initialize sse service

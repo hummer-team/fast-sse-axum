@@ -1,0 +1,7 @@
+LOG_LEVEL = "debug"
+REDIS_URL_SSE = "redis://127.0.0.1:6379"
+HMAC_SECRET = "my-local-dev-secret-key-that-is-not-secure"
+ALLOWED_EVENT_IDS = "carid000001,carid000002,*"
+ALLOWED_EVENT_TYPES = "cart_changed,order_placed,*"
+REDIS_STREAM_NAME = "sse:events:dev"
+REDIS_GROUP_NAME = "sse_consumers_dev"

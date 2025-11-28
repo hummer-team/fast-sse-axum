@@ -2,10 +2,10 @@ pub mod redis_stream {
     use crate::message_package::message_package::EventPackage;
     use crate::redis_pool::redis_pool;
     use crate::sse_service::sse_service;
+    use bb8_redis::RedisConnectionManager;
     use bb8_redis::bb8::Pool;
     use bb8_redis::bb8::PooledConnection;
-    use bb8_redis::RedisConnectionManager;
-    use redis::{streams::StreamReadReply, AsyncCommands, RedisResult};
+    use redis::{AsyncCommands, RedisResult, streams::StreamReadReply};
     use redis::{ErrorKind, RedisError};
     use serde_json;
     use std::sync::OnceLock;
@@ -155,7 +155,11 @@ pub mod redis_stream {
                         Err(e) => {
                             let _: RedisResult<i32> =
                                 conn.xack(stream_name(), group_name(), &[msg_id]).await;
-                            error!("retry failed {} for msg {}. Discarding and ACKing message to prevent blocking.", e.unwrap_or_default().0, msg_id);
+                            error!(
+                                "retry failed {} for msg {}. Discarding and ACKing message to prevent blocking.",
+                                e.unwrap_or_default().0,
+                                msg_id
+                            );
                         }
                     },
                     // :? debug format print log

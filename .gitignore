@@ -25,3 +25,4 @@ logs/
 .env
 _.md
 .DS_Store
+config/*.toml
