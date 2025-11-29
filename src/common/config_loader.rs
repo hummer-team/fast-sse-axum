@@ -25,15 +25,9 @@ pub mod config_loader {
         config_path.push("config");
         config_path.push(&config_filename);
 
-        info!(
-            "Attempting to load configuration for ENV='{}' from '{}'",
-            env,
-            config_path.display()
-        );
-
         // 2. Read the configuration file.
         let content = match fs::read_to_string(&config_path) {
-            Ok(c) => c,
+            Ok(c) =>c,
             Err(e) => {
                 let error_message = format!(
                     "Configuration file '{}' not found. This is a fatal error, process will terminate. Details: {}",
@@ -89,7 +83,7 @@ pub mod config_loader {
             let new_prefix = if prefix.is_empty() {
                 key.to_uppercase()
             } else {
-                format!("{}_{}", prefix, key.to_uppercase())
+                key.to_uppercase()
             };
 
             match value {

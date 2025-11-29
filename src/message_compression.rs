@@ -1,9 +1,9 @@
 pub mod message_compression {
     use axum::response::sse::Event;
-    use base64::{engine::general_purpose, Engine as _};
-    use flate2::write::GzEncoder;
+    use base64::{Engine as _, engine::general_purpose};
     use flate2::Compression;
-    use serde_json::{json, Value};
+    use flate2::write::GzEncoder;
+    use serde_json::{Value, json};
     use std::env;
     use std::io::Write;
     use tower_http::compression::{CompressionLayer, CompressionLevel};
@@ -12,7 +12,6 @@ pub mod message_compression {
     /// Create a compression layer
     #[allow(dead_code)]
     pub fn compression_layer_nosupport_sse() -> Option<CompressionLayer> {
-        // read env var SEND_EVENT_TO_CLIENT_COMPRESSION
         let enabled = is_compression_enabled();
 
         if enabled {
@@ -55,7 +54,7 @@ pub mod message_compression {
 
     /// compression enabled
     pub fn is_compression_enabled() -> bool {
-        env::var("SEND_EVENT_TO_CLIENT_COMPRESSION")
+        env::var("ENABLE_MESSAGE_COMPRESSION")
             .map(|val| val.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
     }

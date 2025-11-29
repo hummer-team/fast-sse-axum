@@ -23,7 +23,7 @@ pub mod log_wrapper {
             .compact()
             .with_timer(fmt::time::OffsetTime::new(local_offset, time_format))
             .with_thread_names(true)
-            .with_thread_ids(false)
+            .with_thread_ids(true)
             .with_level(true)
             .with_target(false)
             .with_file(false)

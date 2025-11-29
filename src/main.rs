@@ -8,10 +8,10 @@ use tracing::log::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // load config
-    config_loader::config_loader::load_config()?;
     // Initialize logger
     let _guard = init();
+    // load config
+    config_loader::config_loader::load_config()?;
     // initialize sse service
     sse_service::init().await;
     // initialize redis stream

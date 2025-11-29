@@ -1,5 +1,6 @@
 pub mod sse_service {
     use crate::auth_middle::auth_middle::{AuthConfig, auth};
+    use crate::common::sse_common::sse_common::get_env_var;
     use crate::message_compression::message_compression;
     use crate::message_package::message_package::EventPackage;
     use crate::response_builder::response_builder::ResponseBuilder;
@@ -20,20 +21,18 @@ pub mod sse_service {
         routing::{get, post},
     };
     use base64::{Engine as _, engine::general_purpose};
+    use dashmap::DashMap;
     use serde::Deserialize;
     use serde_json::json;
-    // use dashmap::DashMap;
-    // use hashbrown::HashMap;
-    use crate::common::sse_common::sse_common::get_env_var;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
-    use std::{collections::HashMap, sync::OnceLock};
+    use std::sync::OnceLock;
     use std::{
         convert::Infallible,
         path::PathBuf,
         time::{Duration, Instant},
     };
-    use tokio::sync::RwLock;
     use tokio::sync::broadcast;
     use tower_http::{services::ServeDir, trace::TraceLayer};
     use tracing::log::{debug, error, info, warn};
@@ -89,18 +88,15 @@ pub mod sse_service {
         last_activity: Mutex<Instant>,
     }
 
-    /// 一个 event_id 对应一个 channel，所有订阅该 event_id 的客户端共享该 channel
-    static CLIENT_SUBSCRIPTIONS: OnceLock<Arc<RwLock<HashMap<String, ChannelMeta>>>> =
-        OnceLock::new();
+    /// Each event_id corresponds to a channel, and all clients subscribed to that event_id share that channel.
+    static CLIENT_SUBSCRIPTIONS: OnceLock<DashMap<String, ChannelMeta>> = OnceLock::new();
 
     const CLEANUP_INTERVAL: Duration = Duration::from_secs(45);
     const CHANNEL_TTL: Duration = Duration::from_secs(120);
-    const MAX_RETRIES: u32 = 1;
-    const RETRY_DELAY: Duration = Duration::from_secs(2);
 
     /// init
     pub async fn init() {
-        let _ = CLIENT_SUBSCRIPTIONS.set(Arc::new(RwLock::new(HashMap::new())));
+        let _ = CLIENT_SUBSCRIPTIONS.set(DashMap::new());
         info!("SSE service subscript initialized");
         tokio::spawn(cleanup_inactive_clients());
     }
@@ -146,7 +142,7 @@ pub mod sse_service {
     /// Subscribe to an event
     pub async fn subscribert(Path((event_id, event_type)): Path<(String, String)>) -> Response {
         let receiver = {
-            let mut subs = CLIENT_SUBSCRIPTIONS.get().unwrap().write().await;
+            let subs = CLIENT_SUBSCRIPTIONS.get().unwrap();
             let meta = subs.entry(event_id.clone()).or_insert_with(|| {
                 let (tx, _rx) = broadcast::channel::<Arc<String>>(4096);
                 info!("create channel: {} (type: {})", event_id, event_type);
@@ -155,7 +151,7 @@ pub mod sse_service {
                     last_activity: Mutex::new(Instant::now()),
                 }
             });
-            meta.sender.subscribe()
+            meta.value().sender.subscribe()
         };
         info!(
             "client subscribe event: {} / {} (receiver: {})",
@@ -209,73 +205,58 @@ pub mod sse_service {
             .into_response()
     }
 
-    /// Send a message to client,if send fail retry
-    pub async fn send_message(message: EventPackage) -> Result<bool, Option<(String, String)>> {
-        let start = Instant::now();
+    /// Dispatches a message for sending.
+    /// Tries to send immediately. If no subscribers are found,
+    /// it spawns a background task to handle retries and potential dead-lettering.
+    /// This function returns immediately and does not block.
+    pub async fn send_mesage_with_no_block<F, Fut>(message: EventPackage, dlq_handler: F)
+    where
+        F: Fn(EventPackage) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
         let payload_to_send = get_payload(&message);
         let payload_arc = Arc::new(payload_to_send);
-        for attempt in 0..=MAX_RETRIES {
-            let sse_sender = {
-                let subs = CLIENT_SUBSCRIPTIONS.get().unwrap().read().await;
-                if let Some(meta) = subs.get(&message.get_event_id()) {
-                    // * 表示解引用
-                    *meta.last_activity.lock().unwrap() = Instant::now();
-                    Some(meta.sender.clone())
-                } else {
-                    None
-                }
-            }; // free the lock
 
-            if let Some(sender) = sse_sender {
-                let event_id = message.get_event_id();
-                let event_name = message.get_event_name();
-                let event_type = message.get_event_type();
+        // Attempt a quick send first.
+        let sse_sender = {
+            let subs = CLIENT_SUBSCRIPTIONS.get().unwrap();
+            subs.get(&message.get_event_id()).map(|meta| {
+                // Update the last activity time.
+                *meta.last_activity.lock().unwrap() = Instant::now();
+                meta.sender.clone()
+            })
+        };
 
-                let send_start = Instant::now();
-                match sender.send(payload_arc.clone()) {
-                    Ok(receivers_count) => {
-                        let duration = send_start.elapsed().as_millis();
+        if let Some(sender) = sse_sender {
+            if sender.receiver_count() > 0 {
+                match sender.send(payload_arc) {
+                    Ok(_) => {
+                        // Fast path successful, message sent.
                         info!(
-                            "event_id: {},event_type: {},receivers: {},duration:{} ms,Broadcast successful",
-                            event_id, event_name, receivers_count, duration
+                            "Message for event_id: {} sent to client successfully.",
+                            message.get_event_id()
                         );
-                        return Result::Ok(true);
+                        return;
                     }
-                    Err(broadcast::error::SendError(_dropped)) => {
-                        let duration = start.elapsed().as_millis();
-                        error!(
-                            "event_id: {},event_type: {},duration: {} ms,no active receivers",
-                            event_id, event_type, duration
+                    Err(_) => {
+                        // This can happen if the last receiver disconnects between the receiver_count() check and send().
+                        // Log this event and fall through to the slow path for retries.
+                        warn!(
+                            "Fast path send failed for event_id: {}. Race condition likely. Falling back to retry task.",
+                            message.get_event_id()
                         );
                     }
-                };
-            } else {
-                if attempt < MAX_RETRIES {
-                    warn!(
-                        "No active subscription for event_id: {}, attempt {}/{}. Retrying in {:?}...",
-                        message.get_event_id(),
-                        attempt + 1,
-                        MAX_RETRIES + 1,
-                        RETRY_DELAY
-                    );
-                    tokio::time::sleep(RETRY_DELAY).await;
                 }
             }
         }
-        warn!(
-            "event_id: {},event_type: {},send message done, cost time: {} ms",
-            message.get_event_id(),
-            message.event_name,
-            start.elapsed().as_millis()
+
+        // Slow path: No active subscription or sender has no receivers.
+        // Spawn a background task to handle retries.
+        info!(
+            "No active subscribers for event_id: {}. Spawning retry task.",
+            message.get_event_id()
         );
-        let msg = (
-            "NO_ACTIVE_SUBSCRIPT_RETRY_SEND_FAIL".to_string(),
-            format!(
-                "no active SSE subscription retry {} send message fail.",
-                MAX_RETRIES
-            ),
-        );
-        Err(Some(msg))
+        tokio::spawn(retry_and_dispatch_message(message, Arc::new(dlq_handler)));
     }
 
     pub async fn send_message_with_web_request(
@@ -305,15 +286,16 @@ pub mod sse_service {
             event.get_event_type()
         );
         // send message
-        match send_message(event).await {
-            // ignore ok responses values
-            Ok(..) => ResponseBuilder::builder(false).ok(),
-            Err(error) => ResponseBuilder::builder(false).error(
-                StatusCode::OK,
-                "Fail",
-                error.unwrap().1.as_str(),
-            ),
-        }
+        // This is a simplified example. In a real scenario, you might not have the DLQ handler here.
+        // For now, we'll use a placeholder that just logs.
+        let dlq_handler = |msg: EventPackage| async move {
+            error!(
+                "DLQ HANDLER (WEB): Message for event_id {} failed all retries.",
+                msg.get_event_id()
+            );
+        };
+        send_mesage_with_no_block(event, dlq_handler).await;
+        ResponseBuilder::builder(false).ok()
     }
 
     /// cleanup inactive clients
@@ -321,11 +303,13 @@ pub mod sse_service {
         loop {
             //noblock thread
             tokio::time::sleep(CLEANUP_INTERVAL).await;
+            let subs = CLIENT_SUBSCRIPTIONS.get().unwrap();
             let to_remove: Vec<String> = {
-                let r = CLIENT_SUBSCRIPTIONS.get().unwrap().read().await;
                 let now = Instant::now();
-                r.iter()
-                    .filter_map(|(id, meta)| {
+                subs.iter()
+                    .filter_map(|entry| {
+                        let id = entry.key();
+                        let meta = entry.value();
                         let last_activity = *meta.last_activity.lock().unwrap();
                         // channel no message and ttl timeout
                         if meta.sender.receiver_count() == 0 && now - last_activity > CHANNEL_TTL {
@@ -337,21 +321,14 @@ pub mod sse_service {
                     .collect()
             };
 
-            let removed_count = if !to_remove.is_empty() {
-                let mut w = CLIENT_SUBSCRIPTIONS.get().unwrap().write().await;
-                let before = w.len();
+            if !to_remove.is_empty() {
+                let removed_count = to_remove.len();
                 for id in to_remove {
-                    w.remove(&id);
+                    subs.remove(&id);
                 }
-                before - w.len()
-            } else {
-                0
-            };
-
-            if removed_count > 0 {
-                info!("Cleaned up {} inactive channels", removed_count);
-            } else {
-                info!("No inactive channels to clean");
+                if removed_count > 0 {
+                    info!("Cleaned up {} inactive channels", removed_count);
+                }
             }
         }
     }
@@ -361,27 +338,101 @@ pub mod sse_service {
         let mut headers: HashMap<String, String> = message.headers.clone().unwrap_or_default();
         headers.insert("send_time".to_string(), now_time_with_format(None));
 
-        let uncompressed_payload = json!({
+        let org_payload = json!({
             "data": message.data.clone(),
             "headers": headers
         });
 
-        let final_payload = if message_compression::is_compression_enabled() {
-            match message_compression::compress_and_encode(&uncompressed_payload) {
-                Ok(compressed_payload) => compressed_payload,
-                Err(e) => {
-                    warn!("Payload compression failed: {}. Sending uncompressed.", e);
-                    uncompressed_payload
-                }
-            }
-        } else {
-            uncompressed_payload
+        // If the message has already been compressed, it need not be compressed again.
+        let is_compressed_payload = match headers.get_key_value("message_compressed") {
+            Some(value) => value.1 == "true",
+            None => false,
         };
+
+        let final_payload =
+            if message_compression::is_compression_enabled() && !is_compressed_payload {
+                match message_compression::compress_and_encode(&org_payload) {
+                    Ok(compressed_payload) => compressed_payload,
+                    Err(e) => {
+                        warn!("Payload compression failed: {}. Sending uncompressed.", e);
+                        org_payload
+                    }
+                }
+            } else {
+                org_payload
+            };
 
         serde_json::to_string(&final_payload).unwrap_or_else(|e| {
             error!("Failed to serialize final payload: {}", e);
             // Fallback to a simple error JSON string
             r#"{"error":"payload serialization failed"}"#.to_string()
         })
+    }
+
+    /// Background task to retry sending a message.
+    async fn retry_and_dispatch_message<F, Fut>(message: EventPackage, dlq_handler: Arc<F>)
+    where
+        F: Fn(EventPackage) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send,
+    {
+        let retries = get_env_var("SEND_FAIL_RETRIES", Some("1")).unwrap_or(1);
+        let delay_secs = get_env_var("SEND_FAIL_DELAY_SECONDS", Some("2")).unwrap_or(2);
+        let retry_delay = Duration::from_secs(delay_secs);
+
+        let payload_to_send = get_payload(&message);
+        let payload_arc = Arc::new(payload_to_send);
+
+        for attempt in 0..=retries {
+            if attempt > 0 {
+                warn!(
+                    "Retrying to send message for event_id: {}, attempt {}/{}",
+                    message.get_event_id(),
+                    attempt,
+                    retries
+                );
+                tokio::time::sleep(retry_delay).await;
+            }
+
+            let sse_sender = {
+                let subs = CLIENT_SUBSCRIPTIONS.get().unwrap();
+                subs.get(&message.get_event_id())
+                    .map(|meta| meta.sender.clone())
+            };
+
+            if let Some(sender) = sse_sender {
+                if sender.receiver_count() > 0 {
+                    if sender.send(payload_arc.clone()).is_ok() {
+                        info!(
+                            "Message for event_id: {} sent successfully on retry attempt {}.",
+                            message.get_event_id(),
+                            attempt
+                        );
+                        return; // Success
+                    }
+                }
+            }
+        }
+
+        // All retries failed.
+        error!(
+            "All retry attempts failed for event_id: {}. Handling as per configuration.",
+            message.get_event_id()
+        );
+
+        let push_to_dlq =
+            get_env_var("DEAD_MESSAGE_PUSH_DEAD_QUEUE", Some("false")).unwrap_or(false);
+
+        if push_to_dlq {
+            info!(
+                "Pushing failed message for event_id: {} to dead-letter queue.",
+                message.get_event_id()
+            );
+            dlq_handler(message).await;
+        } else {
+            warn!(
+                "Discarding message for event_id: {} after all retries failed (DLQ disabled).",
+                message.get_event_id()
+            );
+        }
     }
 }

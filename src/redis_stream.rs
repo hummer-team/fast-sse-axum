@@ -16,7 +16,6 @@ pub mod redis_stream {
     // Redis Stream
     const DEFAULT_STREAM_NAME: &str = "sse:events";
     const DEFAULT_GROUP_NAME: &str = "sse_consumers";
-    const CONSUMER_NAME_PREFIX: &str = "sse-server";
 
     type RedisPool = Pool<RedisConnectionManager>;
     static REDIS_POOL: OnceLock<Pool<RedisConnectionManager>> = OnceLock::new();
@@ -142,26 +141,23 @@ pub mod redis_stream {
                 // parse message
                 match parse_stream_message(msg_id, &stream_id.map) {
                     // send message
-                    Ok(msg) => match sse_service::send_message(msg).await {
-                        Ok(_) => {
-                            //send message success ack message
-                            let _: RedisResult<i32> =
-                                conn.xack(stream_name(), group_name(), &[msg_id]).await;
-                            info!(
-                                "send message success, ack message success msg id :{}",
-                                msg_id
-                            );
-                        }
-                        Err(e) => {
-                            let _: RedisResult<i32> =
-                                conn.xack(stream_name(), group_name(), &[msg_id]).await;
-                            error!(
-                                "retry failed {} for msg {}. Discarding and ACKing message to prevent blocking.",
-                                e.unwrap_or_default().0,
-                                msg_id
-                            );
-                        }
-                    },
+                    Ok(msg) => {
+                        let dlq_handler = |event_package: EventPackage| async move {
+                            if let Err(e) = push_to_dead_letter_queue(&event_package).await {
+                                error!("Failed to push message to dead-letter queue: {}", e);
+                            }
+                        };
+                        // Delegate the sending task. This call returns immediately.
+                        sse_service::send_mesage_with_no_block(msg, dlq_handler).await;
+                        // As per requirement, ACK the message immediately to unblock the stream.
+                        // The spawned task is now responsible for delivery or DLQ.
+                        let _: RedisResult<i32> =
+                            conn.xack(stream_name(), group_name(), &[msg_id]).await;
+                        info!(
+                            "Delegated message for processing and ACKed msg_id: {}",
+                            msg_id
+                        );
+                    }
                     // :? debug format print log
                     Err(e) => error!("get message error: {:?}", e),
                 }
@@ -174,15 +170,15 @@ pub mod redis_stream {
         redis_pool: RedisPool,
         shutdown: CancellationToken,
     ) -> RedisResult<()> {
-        let consumer_name = format!("{}:{}", CONSUMER_NAME_PREFIX, std::process::id());
+        let consumer_name = group_name();
         info!(
             "Starting Redis stream listener with consumer name: {}",
-            consumer_name
+            group_name()
         );
 
         if let Ok(mut conn) = redis_pool::get_conn(&redis_pool).await {
             info!("Checking for pending messages...");
-            match read_stream_messages(&mut conn, &consumer_name, true).await {
+            match read_stream_messages(&mut conn, consumer_name, true).await {
                 Ok(reply) if !reply.keys.is_empty() => {
                     if let Err(e) = process_stream_entries(&mut conn, &reply.keys).await {
                         error!("Failed to process pending stream entries: {}", e);
@@ -232,6 +228,36 @@ pub mod redis_stream {
         Ok(())
     }
 
+    /// Pushes a failed event package to the dead-letter queue.
+    pub async fn push_to_dead_letter_queue(message: &EventPackage) -> RedisResult<()> {
+        let pool = REDIS_POOL.get().expect("Redis pool not initialized");
+        let mut conn = redis_pool::get_conn(pool).await?;
+
+        let msg_json = serde_json::to_string(message).map_err(|e| {
+            redis::RedisError::from((
+                redis::ErrorKind::TypeError,
+                "DLQ Serialization failed",
+                e.to_string(),
+            ))
+        })?;
+
+        let dlq_stream_name = format!("{}:dead_letter", stream_name());
+
+        info!(
+            "Pushing message for event_id: {} to DLQ stream: {}",
+            message.get_event_id(),
+            dlq_stream_name
+        );
+
+        redis::cmd("XADD")
+            .arg(&dlq_stream_name)
+            .arg("*")
+            .arg(message.get_event_id())
+            .arg(msg_json)
+            .query_async(&mut *conn)
+            .await
+    }
+
     async fn read_stream_messages(
         conn: &mut PooledConnection<'_, RedisConnectionManager>,
         consumer_name: &str,
@@ -257,14 +283,18 @@ pub mod redis_stream {
         // only init once
         static STREAM_NAME: OnceLock<String> = OnceLock::new();
         STREAM_NAME.get_or_init(|| {
-            std::env::var("REDIS_STREAM_NAME").unwrap_or_else(|_| DEFAULT_STREAM_NAME.to_string())
+            std::env::var("QUEUE_NAME").unwrap_or_else(|_| DEFAULT_STREAM_NAME.to_string())
         })
     }
 
     fn group_name() -> &'static String {
         static GROUP_NAME: OnceLock<String> = OnceLock::new();
         GROUP_NAME.get_or_init(|| {
-            std::env::var("REDIS_GROUP_NAME").unwrap_or_else(|_| DEFAULT_GROUP_NAME.to_string())
+            let name = std::env::var("CONSUMERS_GROUP_NAME")
+                .unwrap_or_else(|_| DEFAULT_GROUP_NAME.to_string());
+            let id = std::env::var("CONSUMERS_GROUP_ID")
+                .unwrap_or_else(|_| std::process::id().to_string());
+            format!("{}_{}", name, id)
         })
     }
 }
