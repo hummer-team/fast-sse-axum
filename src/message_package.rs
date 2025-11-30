@@ -10,6 +10,7 @@ pub mod message_package {
         pub event_id: Option<String>,
         pub event_type: Option<String>,
         pub user: Option<User>,
+        pub send_direct: Option<bool>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +28,7 @@ pub mod message_package {
             data: Option<serde_json::Value>,
             headers: Option<HashMap<String, String>>,
             event_type: Option<String>,
+            send_direct: Option<bool>,
         ) -> Self {
             EventPackage {
                 event_name: event_name.to_string(),
@@ -38,6 +40,7 @@ pub mod message_package {
                 data: data,
                 headers: headers,
                 event_type: event_type,
+                send_direct: send_direct,
             }
         }
 

@@ -4,9 +4,11 @@ pub mod sse_service {
     use crate::message_compression::message_compression;
     use crate::message_package::message_package::EventPackage;
     use crate::response_builder::response_builder::ResponseBuilder;
+    use crate::sse_event_publish::sse_event_publish;
+    use crate::sse_event_publish::sse_event_publish::EventPublisher;
     use crate::{
         common::sse_common::sse_common::ResourceResponse,
-        common::sse_common::sse_common::now_time_with_format, redis_stream::redis_stream,
+        common::sse_common::sse_common::now_time_with_format,
     };
     use axum::extract::Path;
     use axum::middleware::from_fn_with_state;
@@ -123,8 +125,10 @@ pub mod sse_service {
             Some(serde_json::Value::String(encoded_body)),
             None, // headers
             Some("mock_event_type".to_string()),
+            Some(false),
         );
-        match redis_stream::publish_event(event_package).await {
+        let publish = sse_event_publish::RedisEventPublisher::new();
+        match publish.publish_event(event_package).await {
             Ok(msg_id) => {
                 info!("Successfully published mock event with ID: {}", msg_id);
                 let response_data = ResourceResponse::ok(Some(json!({ "message_id": msg_id })));
@@ -133,7 +137,7 @@ pub mod sse_service {
             Err(e) => {
                 error!("Failed to publish mock event: {}", e);
                 let response_data =
-                    ResourceResponse::<serde_json::Value>::error("PUBLISH_ERROR", &e.to_string());
+                    ResourceResponse::<serde_json::Value>::error("PUBLISH_ERROR", &e);
                 (StatusCode::INTERNAL_SERVER_ERROR, Json(response_data)).into_response()
             }
         }
@@ -269,6 +273,7 @@ pub mod sse_service {
             headers,
             event_name,
             user,
+            send_direct,
             ..
         } = message;
         let event = EventPackage::new(
@@ -279,22 +284,38 @@ pub mod sse_service {
             data,
             headers,
             Some(event_type),
+            send_direct,
         );
         debug!(
             "sending message to client message id: {} message type: {}",
             event.get_event_id(),
             event.get_event_type()
         );
-        // send message
-        // This is a simplified example. In a real scenario, you might not have the DLQ handler here.
-        // For now, we'll use a placeholder that just logs.
-        let dlq_handler = |msg: EventPackage| async move {
-            error!(
-                "DLQ HANDLER (WEB): Message for event_id {} failed all retries.",
-                msg.get_event_id()
-            );
-        };
-        send_mesage_with_no_block(event, dlq_handler).await;
+        match event.send_direct {
+            Some(false) => {
+                let publish = sse_event_publish::RedisEventPublisher::new();
+                match publish.publish_event(event).await {
+                    Ok(msg) => {
+                        info!("Message {} published to message boker successfully", msg);
+                    }
+                    Err(e) => {
+                        error!("Error publishing message to boker: {:?}", e);
+                    }
+                }
+            }
+            None | Some(true) => {
+                // send message
+                // This is a simplified example. In a real scenario, you might not have the DLQ handler here.
+                // For now, we'll use a placeholder that just logs.
+                let dlq_handler = |msg: EventPackage| async move {
+                    error!(
+                        "DLQ HANDLER (WEB): Message for event_id {} failed all retries.",
+                        msg.get_event_id()
+                    );
+                };
+                send_mesage_with_no_block(event, dlq_handler).await;
+            }
+        }
         ResponseBuilder::builder(false).ok()
     }
 
