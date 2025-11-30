@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod config_loader_tests {
-    use crate::common::config_loader::config_loader;
+    use crate::common::config_loader;
     use std::collections::HashMap;
     use std::env;
     use std::sync::Mutex;

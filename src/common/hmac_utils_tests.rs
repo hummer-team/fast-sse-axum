@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod hmac_utils_tests {
-    use crate::common::hmac_utils::hmac_utils::{create_sign, verify_sign};
+    use crate::common::hmac_utils::{create_sign, verify_sign};
     use std::path::PathBuf;
     use std::sync::Once;
 

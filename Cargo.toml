@@ -3,6 +3,7 @@ name = "fast-sse"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+authors = ["Lee <bingyang136@163.com>"]
 publish = false
 
 [dependencies]
@@ -17,16 +18,21 @@ headers = "0.4"
 hex = "0.4.3"
 hmac = "0.12.1"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
+serde_json = { version = "1.0.145" }
 sha2 = "0.10.9"
 time = { version = "0.3.44", features = ["macros", "local-offset"] }
-tokio = { version = "1.44", features = ["full"] }
-tokio-stream = "0.1.17"
+tokio = { version = "1.48", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "net",
+] }
 tower-http = { version = "0.6.6", features = [
     "fs",
     "trace",
-    "compression-gzip",
-    "compression-zstd",
+    # "compression-gzip",
+    # "compression-zstd",
 ] }
 tracing = "0.1"
 tracing-appender = { version = "0.2.3", default-features = false }
@@ -49,11 +55,8 @@ chrono = "0.4.42"
 toml = "0.9.8"
 regex = "1.12.2"
 async-trait = "0.1.89"
-# thiserror = "2.0.17"
-# async-compression = "0.4.33"
-# hyper = { version = "1.8.1", features = ["http1", "http2", "server"] }
-# http-body = "1.0.1"
 [dev-dependencies]
 eventsource-stream = "0.2"
 reqwest = { version = "0.12", features = ["stream"] }
 reqwest-eventsource = "0.6"
+tokio-stream = "0.1.17"

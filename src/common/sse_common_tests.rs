@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod sse_common_tests {
-    use crate::common::sse_common::sse_common::{now_time_with_format, ResourceResponse};
+    use crate::common::sse_common::{ResourceResponse, now_time_with_format};
 
     #[test]
     pub fn test_resource() {
