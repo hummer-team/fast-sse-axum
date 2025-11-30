@@ -2,7 +2,7 @@
 mod message_package_tests {
     use std::collections::HashMap;
 
-    use crate::message_package::*;
+    use crate::message_package;
 
     #[tokio::test]
     pub async fn message_package_tests() {
@@ -16,6 +16,7 @@ mod message_package_tests {
             "bob".to_string(),
             serde_json::to_value("Hello, World!").ok(),
             Some(map),
+            None,
             None,
         );
         println!("message_2 {:?}", message_2.data.as_ref().unwrap());

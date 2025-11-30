@@ -1,6 +1,6 @@
 #[cfg(test)]
 pub mod log_tests {
-    use crate::log_wrapper::log_wrapper::init;
+    use crate::log_wrapper::init;
     use tracing::log::{error, info, warn};
 
     #[test]

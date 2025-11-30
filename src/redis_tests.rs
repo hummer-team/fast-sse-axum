@@ -2,8 +2,8 @@
 mod redis_tests {
     use redis::RedisError;
 
-    use crate::message_package::message_package;
-    use crate::redis_pool::redis_pool;
+    use crate::message_package;
+    use crate::redis_pool;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Once;

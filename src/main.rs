@@ -1,8 +1,8 @@
 use fast_sse::common::config_loader;
-use fast_sse::log_wrapper::log_wrapper::init;
-use fast_sse::redis_stream::redis_stream;
-use fast_sse::sse_service::sse_service;
-use fast_sse::tcp_configuration::tcp_configuration;
+use fast_sse::log_wrapper::init;
+use fast_sse::redis_stream;
+use fast_sse::sse_service;
+use fast_sse::tcp_configuration;
 use std::net::SocketAddr;
 use tracing::log::info;
 
@@ -11,7 +11,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logger
     let _guard = init();
     // load config
-    config_loader::config_loader::load_config()?;
+    config_loader::load_config()?;
     // initialize sse service
     sse_service::init().await;
     // initialize redis stream

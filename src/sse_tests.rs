@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::sse_service::sse_service::init_router;
+    use crate::sse_service::init_router;
     use eventsource_stream::Eventsource;
     use tokio::net::TcpListener;
     use tokio_stream::StreamExt;

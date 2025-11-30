@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod message_compression_tests {
-    use crate::message_compression::message_compression;
-    use base64::{engine::general_purpose, Engine as _};
+    use crate::message_compression;
+    use base64::{Engine as _, engine::general_purpose};
     use flate2::read::GzDecoder;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::io::Read;
 
     #[test]
