@@ -141,6 +141,8 @@ This is attributable to the K6 load testing strategy, as consumers require an es
 # Use step
 1. build source code
 2. build redis server
+3. subscribe message
+4. publish message
 
 ## Postman test
 1. signature eventId and eventType(`use hmac algorithm`)
